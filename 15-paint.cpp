@@ -6,6 +6,7 @@ Software License Agreement (BSD License)
 //==============================================================================
 
 #include "chai3d.h"
+#include "system/CGlobals.h"
 
 using namespace chai3d;
 using namespace std;
@@ -32,13 +33,19 @@ cDirectionalLight* light;
 cHapticDeviceHandler* handler;
 cGenericHapticDevicePtr hapticDevice;
 cToolCursor* tool;
-cMultiMesh* weapon;
+cMultiMesh* weapon_pistol = nullptr;
+cMultiMesh* weapon_dragunov = nullptr;
+cMultiMesh* weapon_rifle = nullptr;
 cBackground* background;
 bool simulationRunning = false;
 bool simulationFinished = true;
 cFrequencyCounter frequencyCounter;
 int screenW, screenH, windowW, windowH, windowPosX, windowPosY;
 string resourceRoot;
+cMatrix3d pistolOrientation;
+cMatrix3d dragunovOrientation;
+cMatrix3d rifleOrientation;
+
 
 //------------------------------------------------------------------------------
 // DECLARED MACROS
@@ -55,7 +62,31 @@ void graphicsTimer(int data);
 void close(void);
 void updateHaptics(void);
 void simulateRecoil(void);
+void calculateAimRotation(const cMatrix3d& deviceRotation, cMatrix3d& aimRotation);
 
+// Function to apply texture to a weapon model
+void applyTextureToWeapon(cMultiMesh* weapon, const std::string& texturePath) {
+	cTexture2dPtr weaponTexture = cTexture2d::create();
+	bool fileload = weaponTexture->loadFromFile(RESOURCE_PATH(texturePath.c_str()));
+	if (!fileload) {
+#if defined(_MSVC)
+		fileload = weaponTexture->loadFromFile((std::string("../../../bin/resources/") + texturePath).c_str());
+#endif
+	}
+	if (!fileload) {
+		cout << "Error - Texture file failed to load correctly: " << texturePath << endl;
+		return;
+	}
+
+	int numMeshes = weapon->getNumMeshes();
+	for (int i = 0; i < numMeshes; i++) {
+		cMesh* mesh = weapon->getMesh(i);
+		if (mesh != nullptr) {
+			mesh->setTexture(weaponTexture);
+			mesh->setUseTexture(true);
+		}
+	}
+}
 
 int main(int argc, char* argv[])
 {
@@ -109,37 +140,41 @@ int main(int argc, char* argv[])
 	// WORLD - CAMERA - LIGHTING
 	//--------------------------------------------------------------------------
 
+	// create a new world.
 	world = new cWorld();
+
+	// set the background color of the environment
 	world->m_backgroundColor.setWhite();
+
+	// create a camera and insert it into the virtual world
 	camera = new cCamera(world);
 	world->addChild(camera);
-	camera->set(cVector3d(0.8, 0.0, 0.0), cVector3d(0.0, 0.0, 0.0), cVector3d(0.0, 0.0, 1.0));
-	camera->setClippingPlanes(0.01, 10.0);
 
-	if (stereoMode == C_STEREO_DISABLED)
-	{
-		camera->setOrthographicView(1.3);
-	}
+	// position and orient the camera
+	camera->set(cVector3d(1.5, 0.0, 1.0),    // camera position (eye)
+		cVector3d(0.0, 0.0, 0.0),    // lookat position (target)
+		cVector3d(0.0, 0.0, 1.0));   // direction of the (up) vector
 
-	camera->setStereoMode(stereoMode);
-	camera->setStereoEyeSeparation(0.01);
-	camera->setStereoFocalLength(1.0);
-	camera->setMirrorVertical(mirroredDisplay);
-	camera->setUseMultipassTransparency(true);
+	// set the near and far clipping planes of the camera
+	// anything in front or behind these clipping planes will not be rendered
+	camera->setClippingPlanes(0.01, 100);
 
+	// create a light source
 	light = new cDirectionalLight(world);
-	world->addChild(light);
-	light->setEnabled(true);
-	light->setDir(-1.0, 0.0, -0.4);
 
-	// create a background object
-	cBackground* background = new cBackground();
-	// add background to back layer of camera
-	camera->m_backLayer->addChild(background);
-	// set aspect ration of background image a constant
-	background->setFixedAspectRatio(true);
-	// load an image file
-	background->loadFromFile("6cdfaf7b7890b598475c13a447251f96.jpg");
+	// add light to world
+	world->addChild(light);
+
+	// enable light source
+	light->setEnabled(true);
+
+	// define the direction of the light beam
+	light->setDir(-1.0, -1.0, -1.0);
+
+	// set lighting conditions
+	light->m_ambient.set(0.4f, 0.4f, 0.4f);
+	light->m_diffuse.set(0.8f, 0.8f, 0.8f);
+	light->m_specular.set(1.0f, 1.0f, 1.0f);
 
 	//--------------------------------------------------------------------------
 	// HAPTIC DEVICES / TOOLS
@@ -152,82 +187,139 @@ int main(int argc, char* argv[])
 	tool = new cToolCursor(world);
 	world->addChild(tool);
 	tool->setHapticDevice(hapticDevice);
-	double toolRadius = 0.01;
-	tool->setRadius(toolRadius);
-	tool->setWorkspaceRadius(1.5);
+	double toolRadius = 0.1;
+	// tool->setRadius(toolRadius);
+	tool->setWorkspaceRadius(1.0);
 	tool->setWaitForSmallForce(true);
 	tool->start();
 
 	//--------------------------------------------------------------------------
-	// CREATE WEAPON PLACEHOLDER
+	// CREATE OBJECTS
 	//--------------------------------------------------------------------------
 
-	weapon = new cMultiMesh();
-	world->addChild(weapon);
+	// read the scale factor between the physical workspace of the haptic
+	// device and the virtual workspace defined for the tool
+	double workspaceScaleFactor = tool->getWorkspaceScaleFactor();
 
-	bool fileload;
-	fileload = weapon->loadFromFile(RESOURCE_PATH("../resources/drakefire_pistol_low.obj"));
-	if (!fileload)
-	{
-		#if defined(_MSVC)
-		fileload = weapon->loadFromFile("../../../bin/resources/drakefire_pistol_low.obj");
-		#endif
+	// properties
+	double maxStiffness = hapticDeviceInfo.m_maxLinearStiffness / workspaceScaleFactor;
+
+	//--------------------------------------------------------------------------
+	// CREATE WEAPON 
+	//--------------------------------------------------------------------------
+
+	// Initialize pistol model
+	weapon_pistol = new cMultiMesh();
+	bool fileload = weapon_pistol->loadFromFile(RESOURCE_PATH("../resources/pistol.obj"));
+	if (!fileload) {
+#if defined(_MSVC)
+		fileload = weapon_pistol->loadFromFile("../../../bin/resources/pistol.obj");
+#endif
 	}
-	if (!fileload)
-	{
-		cout << "Error - Model file failed to load correctly." << endl;
+	if (!fileload) {
+		cout << "Error - Pistol model failed to load correctly." << endl;
+		delete weapon_pistol;
+		weapon_pistol = nullptr;
 		close();
 		return (-1);
 	}
 
-	// Apply JPG textures to the weapon
-	cTexture2dPtr weaponTexture = cTexture2d::create();
-	fileload = weaponTexture->loadFromFile(RESOURCE_PATH("../resources/textures/base_albedo.jpg"));
-	if (!fileload)
-	{
-	#if defined(_MSVC)
-		fileload = weaponTexture->loadFromFile("../../../bin/resources/textures/base_metallic.jpg");
-	#endif
+	// Initialize Dragunov model
+	weapon_dragunov = new cMultiMesh();
+	fileload = weapon_dragunov->loadFromFile(RESOURCE_PATH("../resources/dragunov.obj"));
+	if (!fileload) {
+#if defined(_MSVC)
+		fileload = weapon_dragunov->loadFromFile("../../../bin/resources/dragunov.obj");
+#endif
 	}
-	if (!fileload)
-	{
-		cout << "Error - Texture file failed to load correctly." << endl;
+	if (!fileload) {
+		cout << "Error - Dragunov model failed to load correctly." << endl;
+		delete weapon_dragunov;
+		weapon_dragunov = nullptr;
 		close();
 		return (-1);
 	}
 
-	// Apply the texture to all meshes of the weapon
-	int numMeshes = weapon->getNumMeshes();
-	for (int i = 0; i < numMeshes; i++)
-	{
-		cMesh* mesh = weapon->getMesh(i);
-		mesh->setTexture(weaponTexture);
-		mesh->setUseTexture(true);
+	// Initialize Rifle model
+	weapon_rifle = new cMultiMesh();
+	fileload = weapon_rifle->loadFromFile(RESOURCE_PATH("../resources/ak47.obj"));
+	if (!fileload) {
+#if defined(_MSVC)
+		fileload = weapon_rifle->loadFromFile("../../../bin/resources/ak47.obj");
+#endif
+	}
+	if (!fileload) {
+		cout << "Error - Dragunov model failed to load correctly." << endl;
+		delete weapon_rifle;
+		weapon_rifle = nullptr;
+		close();
+		return (-1);
 	}
 
-	weapon->setLocalPos(0.0, 0.2, -0.1); // Adjust these coordinates as necessary
+	// Load and apply textures
+	applyTextureToWeapon(weapon_pistol, "../resources/textures/base_albedo.jpg");
+	applyTextureToWeapon(weapon_dragunov, "../resources/textures/Texture.png");
+	applyTextureToWeapon(weapon_rifle, "../resources/textures/ak47.jpg");
 
-	// Set the weapon orientation to point forwards
-	cMatrix3d rotationMatrix;
-	rotationMatrix.identity();
-	rotationMatrix.rotateAboutGlobalAxisDeg(0, 1, 0, -90); // Adjust as needed
-	rotationMatrix.rotateAboutGlobalAxisDeg(1, 0, 0, 90); // Adjust as needed
-	rotationMatrix.rotateAboutGlobalAxisDeg(0, 0, 1, 15); // Adjust as needed
-	weapon->setLocalRot(rotationMatrix);
+	// Set initial weapon
+	tool->m_image = weapon_pistol;
+
+	weapon_pistol->scale(0.3);
+	weapon_dragunov->scale(0.007);
+	weapon_rifle->scale(0.3);
 
 	// disable culling so that faces are rendered on both sides
-	weapon->setUseCulling(false);
-
-	// scale model
-	weapon->scale(0.3);
+	weapon_pistol->setUseCulling(false);
+	weapon_dragunov->setUseCulling(false);
+	weapon_rifle->setUseCulling(false);
 
 	// compute collision detection algorithm
-	weapon->createAABBCollisionDetector(toolRadius);
+	weapon_pistol->createAABBCollisionDetector(toolRadius);
+	weapon_dragunov->createAABBCollisionDetector(toolRadius);
+	weapon_rifle->createAABBCollisionDetector(toolRadius);
 
-	// Set material properties to ensure visibility
-	weapon->setUseMaterial(true);
+	// define a default stiffness for the object
+	weapon_pistol->setStiffness(0.1 * maxStiffness, true);
+	weapon_dragunov->setStiffness(0.7 * maxStiffness, true);
+	weapon_rifle->setStiffness(0.4 * maxStiffness, true);
+
+
+	// use display list for faster rendering
+	weapon_pistol->setUseDisplayList(true);
+	weapon_dragunov->setUseDisplayList(true);
+	weapon_rifle->setUseDisplayList(true);
+
+	weapon_pistol->setLocalPos(0.0, 0.2, -0.1); // Adjust these coordinates as necessary
+	weapon_dragunov->setLocalPos(0.0, 0.2, -0.1); // Adjust these coordinates as necessary
+	weapon_rifle->setLocalPos(0.0, 0.2, -0.1); // Adjust these coordinates as necessary
+
 	cMaterial mat;
-	weapon->setMaterial(mat);
+	weapon_pistol->setMaterial(mat);
+	weapon_dragunov->setMaterial(mat);
+	weapon_rifle->setMaterial(mat);
+
+
+	//--------------------------------------------------------------------------
+	// WIDGETS
+	//--------------------------------------------------------------------------
+
+	// create a font
+	cFont *font = NEW_CFONTCALIBRI20();
+
+	// create a label to display the haptic rate of the simulation
+	/*labelHapticRate = new cLabel(font);
+	labelHapticRate->m_fontColor.setBlack();
+	camera->m_frontLayer->addChild(labelHapticRate);*/
+
+
+	// create a background object
+	cBackground* background = new cBackground();
+	// add background to back layer of camera
+	camera->m_backLayer->addChild(background);
+	// set aspect ration of background image a constant
+	//background->setFixedAspectRatio(true);
+	// load an image file
+	background->loadFromFile("8657cfcd9a0aa1149a40988c4686478c.png");
 
 	//--------------------------------------------------------------------------
 	// START SIMULATION
@@ -255,13 +347,6 @@ void keySelect(unsigned char key, int x, int y)
 	{
 		exit(0);
 	}
-
-	if (key == 'w'){
-		double maxForce = hapticDevice->getSpecifications().m_maxLinearForce;
-		cVector3d mForce(2*maxForce, -3*maxForce, 0.5*maxForce);
-		cVector3d mTorque(maxForce, 0.0, maxForce);
-		hapticDevice->setForceAndTorque(mForce * 100000000000, mTorque * 100000000000);
-	}
 }
 
 void close(void)
@@ -283,6 +368,7 @@ void graphicsTimer(int data)
 void updateGraphics(void)
 {
 	world->updateShadowMaps(false, mirroredDisplay);
+
 	camera->renderView(windowW, windowH);
 	glutSwapBuffers();
 	glFinish();
@@ -290,8 +376,64 @@ void updateGraphics(void)
 	if (err != GL_NO_ERROR) cout << "Error: " << gluErrorString(err) << endl;
 }
 
+// Global variables for weapon states
+bool isPistolLoaded = true;  // Start with pistol as default
+bool isDragunovLoaded = false;
+bool isRifleLoaded = false;
+
+// Function to apply force based on calculated parameters (for button 0 only)
+void applyForce(cVector3d direction, float vf, float tr) {
+	float force = 0.15 * (vf / tr);
+	cVector3d force_with_direction = force * direction;
+	force_with_direction.mul(3.0);
+	hapticDevice->setForce(force_with_direction);
+}
+
+// Function to update weapon orientation based on device rotation
+void updateWeaponOrientation(cGenericHapticDevicePtr device) {
+	cMatrix3d deviceRotation;
+	device->getRotation(deviceRotation);
+
+	// Combine device rotation with initial weapon orientation
+	if (isPistolLoaded) {
+		weapon_pistol->setLocalRot(deviceRotation * pistolOrientation);
+	}
+	else if (isDragunovLoaded) {
+		weapon_dragunov->setLocalRot(deviceRotation * dragunovOrientation);
+	}
+	else if (isRifleLoaded) {
+		weapon_rifle->setLocalRot(deviceRotation * rifleOrientation);
+	}
+}
+
+// Function to set initial weapon orientations
+void setInitialWeaponOrientations() {
+	// Pistol orientation
+	pistolOrientation.identity();
+	pistolOrientation.rotateAboutGlobalAxisDeg(1, 0, 0, 135);
+	pistolOrientation.rotateAboutGlobalAxisDeg(0, 1, 0, 0);
+	pistolOrientation.rotateAboutGlobalAxisDeg(0, 0, 1, -90);
+	weapon_pistol->setLocalRot(pistolOrientation);
+
+	// Dragunov orientation
+	dragunovOrientation.identity();
+	dragunovOrientation.rotateAboutGlobalAxisDeg(1, 0, 0, 90);
+	dragunovOrientation.rotateAboutGlobalAxisDeg(0, 1, 0, -45);
+	dragunovOrientation.rotateAboutGlobalAxisDeg(0, 0, 1, 0);
+	weapon_dragunov->setLocalRot(dragunovOrientation);
+
+	// Rifle orientation
+	rifleOrientation.identity();
+	rifleOrientation.rotateAboutGlobalAxisDeg(1, 0, 0, 180);
+	rifleOrientation.rotateAboutGlobalAxisDeg(0, 1, 0, 145);
+	rifleOrientation.rotateAboutGlobalAxisDeg(0, 0, 1, 0);
+	weapon_rifle->setLocalRot(rifleOrientation);
+}
+
 void updateHaptics(void)
 {
+	setInitialWeaponOrientations(); // Call this at the start
+
 	cPrecisionClock clock;
 	clock.reset();
 	simulationRunning = true;
@@ -299,27 +441,89 @@ void updateHaptics(void)
 
 	while (simulationRunning)
 	{
-		clock.stop();
-		double timeInterval = clock.getCurrentTimeSeconds();
-		clock.reset();
-		clock.start();
+		frequencyCounter.signal(1);
 
+		// compute global reference frames for each object
 		world->computeGlobalPositions(true);
+
+		// update position and orientation of tool
 		tool->updateFromDevice();
+
+		// Update weapon orientation
+		updateWeaponOrientation(hapticDevice);
+
+		// Declare button states
+		bool button0 = false;
+		bool button1 = false;
+		bool button2 = false;
+		bool button3 = false;
+
+		// Retrieve the state of each button
+		hapticDevice->getUserSwitch(0, button0);
+		hapticDevice->getUserSwitch(1, button1);
+		hapticDevice->getUserSwitch(2, button2);
+		hapticDevice->getUserSwitch(3, button3);
+
+		// Button 0: Fire weapon (Recoil effect)
+		if (button0) {
+			// Apply recoil effect
+			cMatrix3d recoilRotation;
+			recoilRotation.identity();
+			/*recoilRotation.rotateAboutGlobalAxisDeg(1, 0, 0, 60);
+			recoilRotation.rotateAboutGlobalAxisDeg(0, 0, 1, -90);*/
+			recoilRotation.rotateAboutGlobalAxisDeg(1, 0, 0, 10); // Reduced angle for subtler effect
+
+
+			/*if (isPistolLoaded) weapon_pistol->setLocalRot(recoilRotation);
+			else if (isDragunovLoaded) weapon_dragunov->setLocalRot(recoilRotation);
+			else if (isRifleLoaded) weapon_rifle->setLocalRot(recoilRotation);*/
+			if (isPistolLoaded) {
+				weapon_pistol->setLocalRot(weapon_pistol->getLocalRot() * recoilRotation);
+			}
+			else if (isDragunovLoaded) {
+				weapon_dragunov->setLocalRot(weapon_dragunov->getLocalRot() * recoilRotation);
+			}
+			else if (isRifleLoaded) {
+				weapon_rifle->setLocalRot(weapon_rifle->getLocalRot() * recoilRotation);
+			}
+
+			// Define recoil parameters and apply force
+			float vf = 6.153;
+			float tr = 0.003;
+			cVector3d direction(1, 0, 0);
+			applyForce(direction, vf, tr);
+		}
+
+		// Button 1: Switch to Pistol
+		if (button1 && !isPistolLoaded) {
+			tool->m_image = weapon_pistol;
+			isPistolLoaded = true;
+			isDragunovLoaded = false;
+			isRifleLoaded = false;
+		}
+
+		// Button 2: Switch to Rifle
+		if (button2 && !isRifleLoaded) {
+			tool->m_image = weapon_rifle;
+			isPistolLoaded = false;
+			isDragunovLoaded = false;
+			isRifleLoaded = true;
+		}
+
+		// Button 3: Switch to Dragunov (Sniper)
+		if (button3 && !isDragunovLoaded) {
+			tool->m_image = weapon_dragunov;
+			isPistolLoaded = false;
+			isDragunovLoaded = true;
+			isRifleLoaded = false;
+		}
+
+		// compute interaction forces
 		tool->computeInteractionForces();
 
-		// Update weapon orientation based on the haptic device's orientation
-		cMatrix3d toolRot = tool->getDeviceGlobalRot();
-
+		// send forces to haptic device
 		tool->applyToDevice();
-		frequencyCounter.signal(1);
 	}
 
 	simulationFinished = true;
-}
-
-void simulateRecoil()
-{
-	// Define the maximum force the device can apply safely
-	double maxForce = hapticDevice->getSpecifications().m_maxLinearForce;
 }
