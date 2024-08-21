@@ -45,6 +45,8 @@ string resourceRoot;
 cMatrix3d pistolOrientation;
 cMatrix3d dragunovOrientation;
 cMatrix3d rifleOrientation;
+cLabel* weaponNameLabel;
+
 
 
 //------------------------------------------------------------------------------
@@ -187,11 +189,12 @@ int main(int argc, char* argv[])
 	tool = new cToolCursor(world);
 	world->addChild(tool);
 	tool->setHapticDevice(hapticDevice);
-	double toolRadius = 0.1;
-	// tool->setRadius(toolRadius);
+	double toolRadius = 0.001;
+	tool->setRadius(toolRadius);
 	tool->setWorkspaceRadius(1.0);
 	tool->setWaitForSmallForce(true);
 	tool->start();
+	tool->setUseTransparency(true);
 
 	//--------------------------------------------------------------------------
 	// CREATE OBJECTS
@@ -210,10 +213,10 @@ int main(int argc, char* argv[])
 
 	// Initialize pistol model
 	weapon_pistol = new cMultiMesh();
-	bool fileload = weapon_pistol->loadFromFile(RESOURCE_PATH("../resources/pistol.obj"));
+	bool fileload = weapon_pistol->loadFromFile(RESOURCE_PATH("../resources/1911.obj"));
 	if (!fileload) {
 #if defined(_MSVC)
-		fileload = weapon_pistol->loadFromFile("../../../bin/resources/pistol.obj");
+		fileload = weapon_pistol->loadFromFile("../../../bin/resources/1911.obj");
 #endif
 	}
 	if (!fileload) {
@@ -257,14 +260,14 @@ int main(int argc, char* argv[])
 	}
 
 	// Load and apply textures
-	applyTextureToWeapon(weapon_pistol, "../resources/textures/base_albedo.jpg");
+	applyTextureToWeapon(weapon_pistol, "../resources/textures/pistol.png");
 	applyTextureToWeapon(weapon_dragunov, "../resources/textures/Texture.png");
 	applyTextureToWeapon(weapon_rifle, "../resources/textures/ak47.jpg");
 
 	// Set initial weapon
 	tool->m_image = weapon_pistol;
 
-	weapon_pistol->scale(0.3);
+	weapon_pistol->scale(0.02);
 	weapon_dragunov->scale(0.007);
 	weapon_rifle->scale(0.3);
 
@@ -289,9 +292,14 @@ int main(int argc, char* argv[])
 	weapon_dragunov->setUseDisplayList(true);
 	weapon_rifle->setUseDisplayList(true);
 
-	weapon_pistol->setLocalPos(0.0, 0.2, -0.1); // Adjust these coordinates as necessary
-	weapon_dragunov->setLocalPos(0.0, 0.2, -0.1); // Adjust these coordinates as necessary
-	weapon_rifle->setLocalPos(0.0, 0.2, -0.1); // Adjust these coordinates as necessary
+	cVector3d devicePosition;
+	hapticDevice->getPosition(devicePosition);
+
+
+	weapon_pistol->setLocalPos(devicePosition);
+	weapon_dragunov->setLocalPos(devicePosition);
+	weapon_rifle->setLocalPos(devicePosition);
+	weapon_rifle->translate(cVector3d(0.0, -1.0, 0.0));
 
 	cMaterial mat;
 	weapon_pistol->setMaterial(mat);
@@ -304,7 +312,7 @@ int main(int argc, char* argv[])
 	//--------------------------------------------------------------------------
 
 	// create a font
-	cFont *font = NEW_CFONTCALIBRI20();
+	cFont *font = NEW_CFONTCALIBRI32();
 
 	// create a label to display the haptic rate of the simulation
 	/*labelHapticRate = new cLabel(font);
@@ -319,7 +327,15 @@ int main(int argc, char* argv[])
 	// set aspect ration of background image a constant
 	//background->setFixedAspectRatio(true);
 	// load an image file
-	background->loadFromFile("8657cfcd9a0aa1149a40988c4686478c.png");
+	background->loadFromFile("background.jpg");
+
+	// Initialize and set up the weapon name label
+	weaponNameLabel = new cLabel(font);
+	weaponNameLabel->m_fontColor.setGreenDarkOlive();
+	weaponNameLabel->setText("Current Weapon: M1911 PISTOL");  // Default weapon
+	camera->m_frontLayer->addChild(weaponNameLabel);
+	weaponNameLabel->setLocalPos(10, 10);  // Adjust position based on your UI layout
+
 
 	//--------------------------------------------------------------------------
 	// START SIMULATION
@@ -381,6 +397,18 @@ bool isPistolLoaded = true;  // Start with pistol as default
 bool isDragunovLoaded = false;
 bool isRifleLoaded = false;
 
+void updateWeaponLabel() {
+	if (isPistolLoaded) {
+		weaponNameLabel->setText("M1911");
+	}
+	else if (isDragunovLoaded) {
+		weaponNameLabel->setText("DRAGUNOV");
+	}
+	else if (isRifleLoaded) {
+		weaponNameLabel->setText("AK47");
+	}
+}
+
 // Function to apply force based on calculated parameters (for button 0 only)
 void applyForce(cVector3d direction, float vf, float tr) {
 	float force = 0.15 * (vf / tr);
@@ -410,15 +438,15 @@ void updateWeaponOrientation(cGenericHapticDevicePtr device) {
 void setInitialWeaponOrientations() {
 	// Pistol orientation
 	pistolOrientation.identity();
-	pistolOrientation.rotateAboutGlobalAxisDeg(1, 0, 0, 135);
+	pistolOrientation.rotateAboutGlobalAxisDeg(1, 0, 0, 115); // - up + down
 	pistolOrientation.rotateAboutGlobalAxisDeg(0, 1, 0, 0);
 	pistolOrientation.rotateAboutGlobalAxisDeg(0, 0, 1, -90);
 	weapon_pistol->setLocalRot(pistolOrientation);
 
 	// Dragunov orientation
 	dragunovOrientation.identity();
-	dragunovOrientation.rotateAboutGlobalAxisDeg(1, 0, 0, 90);
-	dragunovOrientation.rotateAboutGlobalAxisDeg(0, 1, 0, -45);
+	dragunovOrientation.rotateAboutGlobalAxisDeg(1, 0, 0, 90); // lean right left (- right + left)
+	dragunovOrientation.rotateAboutGlobalAxisDeg(0, 1, 0, -30); // + up - down 
 	dragunovOrientation.rotateAboutGlobalAxisDeg(0, 0, 1, 0);
 	weapon_dragunov->setLocalRot(dragunovOrientation);
 
@@ -500,6 +528,7 @@ void updateHaptics(void)
 			isPistolLoaded = true;
 			isDragunovLoaded = false;
 			isRifleLoaded = false;
+			updateWeaponLabel();
 		}
 
 		// Button 2: Switch to Rifle
@@ -508,6 +537,7 @@ void updateHaptics(void)
 			isPistolLoaded = false;
 			isDragunovLoaded = false;
 			isRifleLoaded = true;
+			updateWeaponLabel();
 		}
 
 		// Button 3: Switch to Dragunov (Sniper)
@@ -516,6 +546,7 @@ void updateHaptics(void)
 			isPistolLoaded = false;
 			isDragunovLoaded = true;
 			isRifleLoaded = false;
+			updateWeaponLabel();
 		}
 
 		// compute interaction forces
