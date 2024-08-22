@@ -141,11 +141,13 @@ int windowPosY;
 
 
 bool is_pressed;
-
-bool flag;
 __int64 time_start;
 __int64 time_end;
-__int64 timer;
+
+cVector3d current_force;
+cVector3d current_torque;
+cVector3d zero_vector;
+float deviation_angle;
 
 //------------------------------------------------------------------------------
 // DECLARED FUNCTIONS
@@ -171,8 +173,9 @@ void updateHaptics(void);
 
 
 
-void pistol_simulator(void);
 __int64 currentTimeMillis();
+void pistol_force(void);
+void rifle_force(void);
 
 //==============================================================================
 /*
@@ -196,7 +199,10 @@ int main(int argc, char* argv[])
 {
 	is_pressed = false;
 
-	flag = false;
+	current_force = (0, 0, 0);
+	current_torque = (0, 0, 0);
+	zero_vector.zero();
+
 
 	//--------------------------------------------------------------------------
 	// INITIALIZATION
@@ -548,6 +554,15 @@ void updateHaptics(void)
 		// READ HAPTIC DEVICE
 		/////////////////////////////////////////////////////////////////////
 
+		int diff;
+		
+		if (is_pressed){
+			diff = currentTimeMillis() - time_start;
+		}
+		else {
+			diff = 0;
+		}
+
 
 		// read position 
 		cVector3d position;
@@ -574,64 +589,45 @@ void updateHaptics(void)
 		hapticDevice->getGripperAngularVelocity(gripperAngularVelocity);
 
 		// read user-switch status (button 0)
-		bool button0;
-		button0 = false;
+		bool button0, button1;
+		button0 = false; 
+		button1 = false;
 		hapticDevice->getUserSwitch(0, button0);
-
+		hapticDevice->getUserSwitch(1, button1);
+		
 		if (!is_pressed  && button0){
 			is_pressed = true;
 			time_start = currentTimeMillis();
 		}
 
 		if (is_pressed && button0){
-			float vf = 6.153;
-			float mf = 2;
-
-			float recoil_energy = 37.856;
-			float recoil_impulse = 12.305;
-			float tr = 0.003;
-
-			float force = 0.15 * (vf / tr);
-
-			cVector3d direction(1, 0, 0.3);
-			cVector3d force_with_direction = force*direction;
-
-			float h_axis = 0.05;
-			cVector3d torque(0, 0, 0);
-			torque = h_axis * force_with_direction;
-			float moment_of_inertia = (h_axis*h_axis)*mf;
-			float deviation_angle = (h_axis*0.019*0.1524) / moment_of_inertia;
-
-			time_end = currentTimeMillis();
-
-			while (time_end - time_start < 100){
-				hapticDevice->setForceAndTorque(force_with_direction, torque*deviation_angle);
-				time_end = currentTimeMillis();
+			if (diff < 100){
+				rifle_force();
+				hapticDevice->setForceAndTorque(current_force, current_torque*deviation_angle);
 			}
-
-			time_start = currentTimeMillis();
-			cSleepMs(2);
-			time_end = currentTimeMillis();
-
-			cVector3d zero(0, 0, 0);
-
-			while (time_end - time_start < 100){
-				hapticDevice->setForce(zero);
-				time_end = currentTimeMillis();
+			else if (diff < 200) {
+				hapticDevice->setForce(zero_vector);
 			}
-
-			is_pressed = false;
+			else{
+				time_start = currentTimeMillis();
+				diff = 0;
+			}
 		}
 
 		if (!(is_pressed && button0)){
-			cVector3d zero(0, 0, 0);
-			hapticDevice->setForce(zero);
+			hapticDevice->setForce(zero_vector);
 		}
 
 		if (is_pressed && !button0){
+			hapticDevice->setForce(zero_vector);
 			is_pressed = false;
 		}
 
+
+		if (button1){
+			cVector3d zero(0, 0, 0);
+			hapticDevice->setForce(zero_vector);
+		}
 
 
 		/////////////////////////////////////////////////////////////////////
@@ -648,7 +644,6 @@ void updateHaptics(void)
 
 		// update frequency counter
 		frequencyCounter.signal(1);
-
 	}
 
 	// exit haptics thread
@@ -665,45 +660,38 @@ __int64 currentTimeMillis() {
 	return (nano - 116444736000000000LL) / 10000;
 }
 
-
-void pistol_simulator(void){
-
-	float vf = 6.153;
-	float mf = 2;
-
-	float recoil_energy = 37.856;
-	float recoil_impulse = 12.305;
-	float tr = 0.003;
+void pistol_force(void){
+	float mf = 1.1;	// mass of firearm
+	float vf = 3.978;	// velocity of firearm
+	float mb = 0.015;	// mass of bullet 
+	float barrel_length = 0.127;	// barrel length
+	float tr = 0.003;	// recoil time
 
 	float force = 0.15 * (vf / tr);
 
-	cVector3d direction(1, 0, 0.3);
-	cVector3d force_with_direction = force*direction;
+	cVector3d direction(1, 0, 0);
+	current_force = force*direction;
 
-	float h_axis = 0.05;
-	cVector3d torque(0, 0, 0);
-	torque = h_axis * force_with_direction;
+	float h_axis = 0.0678;
+	current_torque = h_axis * current_force;
 	float moment_of_inertia = (h_axis*h_axis)*mf;
-	float deviation_angle = (h_axis*0.019*0.1524) / moment_of_inertia;
+	deviation_angle = (h_axis*mb*barrel_length) / moment_of_inertia;
+}
 
-	time_end = currentTimeMillis();
+void rifle_force(void){
+	float mf = 3.9;	// mass of firearm
+	float vf = 2.2688;	// velocity of firearm
+	float mb = 0.0079;	// mass of bullet 
+	float barrel_length = 0.415;	// barrel length
+	float tr = 0.01;	// recoil time
 
-	while (time_end - time_start < 100){
-		hapticDevice->setForceAndTorque(force_with_direction, torque*deviation_angle);
-		time_end = currentTimeMillis();
-	}
+	float force = 0.15 * (vf / tr);
 
-	time_start = currentTimeMillis();
-	cSleepMs(2);
-	time_end = currentTimeMillis();
+	cVector3d direction(1, 0, 0);
+	current_force = force*direction*100;
 
-	cVector3d zero(0, 0, 0);
-
-	while (time_end - time_start < 100){
-		hapticDevice->setForce(zero);
-		time_end = currentTimeMillis();
-	}
-
-	flag = false;
-
+	float h_axis = 0.0007;
+	current_torque = h_axis * current_force;
+	float moment_of_inertia = (h_axis*h_axis)*mf;
+	deviation_angle = (h_axis*mb*barrel_length) / moment_of_inertia;
 }
