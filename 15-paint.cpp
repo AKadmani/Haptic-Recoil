@@ -1,12 +1,7 @@
-//==============================================================================
-/*
-Software License Agreement (BSD License)
-... [license text truncated for brevity] ...
-*/
-//==============================================================================
-
 #include "chai3d.h"
 #include "system/CGlobals.h"
+#include <chrono>
+#include <random>
 
 using namespace chai3d;
 using namespace std;
@@ -65,6 +60,19 @@ void close(void);
 void updateHaptics(void);
 void simulateRecoil(void);
 void calculateAimRotation(const cMatrix3d& deviceRotation, cMatrix3d& aimRotation);
+void updateWeaponOrientation(cGenericHapticDevicePtr device);
+void fireWeapon(cMultiMesh* weapon, double fireRate);
+
+__int64 time_start, time_end;
+
+// Add these global variables
+const int BURST_SIZE = 3;
+int burstCount = 0;
+bool isBurstFiring = false;
+// Add these constants at the top of your file
+const double PISTOL_COOLDOWN = 0.5; // 0.5 seconds cooldown for pistol
+const double SNIPER_RECOIL_MULTIPLIER = 2.0; // Stronger recoil for sniper
+
 
 // Function to apply texture to a weapon model
 void applyTextureToWeapon(cMultiMesh* weapon, const std::string& texturePath) {
@@ -392,169 +400,258 @@ void updateGraphics(void)
 	if (err != GL_NO_ERROR) cout << "Error: " << gluErrorString(err) << endl;
 }
 
-// Global variables for weapon states
-bool isPistolLoaded = true;  // Start with pistol as default
-bool isDragunovLoaded = false;
-bool isRifleLoaded = false;
+	// Global variables for weapon states
+	bool isPistolLoaded = true;  // Start with pistol as default
+	bool isDragunovLoaded = false;
+	bool isRifleLoaded = false;
+	// Add these to your global variables
+	double lastFireTime = 0.0;
+	const double FIRE_RATE_PISTOL = 0.03; // 2 shots per second
+	const double FIRE_RATE_SNIPER = 1.0; // 1 shot per second
+	const double FIRE_RATE_RIFLE = 0.1; // 10 shots per second (for automatic fire)
 
-void updateWeaponLabel() {
-	if (isPistolLoaded) {
-		weaponNameLabel->setText("M1911");
+	void updateWeaponLabel() {
+		if (isPistolLoaded) {
+			weaponNameLabel->setText("M1911");
+		}
+		else if (isDragunovLoaded) {
+			weaponNameLabel->setText("DRAGUNOV");
+		}
+		else if (isRifleLoaded) {
+			weaponNameLabel->setText("AK47");
+		}
 	}
-	else if (isDragunovLoaded) {
-		weaponNameLabel->setText("DRAGUNOV");
+
+	// Function to update weapon orientation based on device rotation
+	void updateWeaponOrientation(cGenericHapticDevicePtr device) {
+		cMatrix3d deviceRotation;
+		device->getRotation(deviceRotation);
+
+		// Combine device rotation with initial weapon orientation
+		if (isPistolLoaded) {
+			weapon_pistol->setLocalRot(deviceRotation * pistolOrientation);
+		}
+		else if (isDragunovLoaded) {
+			weapon_dragunov->setLocalRot(deviceRotation * dragunovOrientation);
+		}
+		else if (isRifleLoaded) {
+			weapon_rifle->setLocalRot(deviceRotation * rifleOrientation);
+		}
 	}
-	else if (isRifleLoaded) {
-		weaponNameLabel->setText("AK47");
+
+	// Function to set initial weapon orientations
+	void setInitialWeaponOrientations() {
+		// Pistol orientation
+		pistolOrientation.identity();
+		pistolOrientation.rotateAboutGlobalAxisDeg(1, 0, 0, 115); // - up + down
+		pistolOrientation.rotateAboutGlobalAxisDeg(0, 1, 0, 0);
+		pistolOrientation.rotateAboutGlobalAxisDeg(0, 0, 1, -90);
+		weapon_pistol->setLocalRot(pistolOrientation);
+
+		// Dragunov orientation
+		dragunovOrientation.identity();
+		dragunovOrientation.rotateAboutGlobalAxisDeg(1, 0, 0, 90); // lean right left (- right + left)
+		dragunovOrientation.rotateAboutGlobalAxisDeg(0, 1, 0, -30); // + up - down 
+		dragunovOrientation.rotateAboutGlobalAxisDeg(0, 0, 1, 0);
+		weapon_dragunov->setLocalRot(dragunovOrientation);
+
+		// Rifle orientation
+		rifleOrientation.identity();
+		rifleOrientation.rotateAboutGlobalAxisDeg(1, 0, 0, 180);
+		rifleOrientation.rotateAboutGlobalAxisDeg(0, 1, 0, 145);
+		rifleOrientation.rotateAboutGlobalAxisDeg(0, 0, 1, 0);
+		weapon_rifle->setLocalRot(rifleOrientation);
 	}
-}
 
-// Function to apply force based on calculated parameters (for button 0 only)
-void applyForce(cVector3d direction, float vf, float tr) {
-	float force = 0.15 * (vf / tr);
-	cVector3d force_with_direction = force * direction;
-	force_with_direction.mul(3.0);
-	hapticDevice->setForce(force_with_direction);
-}
+	// Modify the RecoilState struct
+	struct RecoilState {
+		bool isRecoiling;
+		double recoilTime;
+		double recoilDuration;
+		int shotsFired;
+		cVector3d currentForce;
+		cVector3d currentTorque;
+		cMatrix3d currentRotation;
+		bool canFire; // New field to handle cooldown
+	};	
+	// Global RecoilState for each weapon
+	RecoilState pistolRecoilState;
+	RecoilState rifleRecoilState;
+	RecoilState sniperRecoilState;
 
-// Function to update weapon orientation based on device rotation
-void updateWeaponOrientation(cGenericHapticDevicePtr device) {
-	cMatrix3d deviceRotation;
-	device->getRotation(deviceRotation);
+	// Modify the applyForce function to handle different weapon types
+	void applyForce(cVector3d direction, float vf, float tr, RecoilState& recoilState) {
+		float force = 0.15 * (vf / tr);
+		cVector3d force_with_direction = force * direction;
+		force_with_direction.mul(100.0);
+		hapticDevice->setForce(force_with_direction);
 
-	// Combine device rotation with initial weapon orientation
-	if (isPistolLoaded) {
-		weapon_pistol->setLocalRot(deviceRotation * pistolOrientation);
+		recoilState.isRecoiling = true;
+		recoilState.recoilTime = 0;
+		recoilState.currentForce = force_with_direction;
 	}
-	else if (isDragunovLoaded) {
-		weapon_dragunov->setLocalRot(deviceRotation * dragunovOrientation);
+	void fireWeapon(cMultiMesh* weapon, double fireRate, RecoilState& recoilState) {
+		if (!recoilState.canFire) return;
+
+		cMatrix3d recoilRotation;
+		recoilRotation.identity();
+		recoilRotation.rotateAboutGlobalAxisDeg(1, 0, 0, 5 + (rand() % 5));
+
+		weapon->setLocalRot(weapon->getLocalRot() * recoilRotation);
+
+		float vf = 6.153;
+		float tr = 0.003;
+		cVector3d direction(1 + ((rand() % 20) - 10) / 100.0, ((rand() % 20) - 10) / 100.0, 0.3 + ((rand() % 20) - 10) / 100.0);
+		direction.normalize();
+
+		if (weapon == weapon_dragunov) {
+			vf *= SNIPER_RECOIL_MULTIPLIER;
+			tr *= SNIPER_RECOIL_MULTIPLIER;
+		}
+
+		applyForce(direction, vf, tr, recoilState);
+
+		recoilState.recoilDuration = fireRate * 2;
+		recoilState.shotsFired++;
+		recoilState.currentRotation = recoilRotation;
+		recoilState.canFire = false;
 	}
-	else if (isRifleLoaded) {
-		weapon_rifle->setLocalRot(deviceRotation * rifleOrientation);
+	// Add this function to update recoil state
+	void updateRecoilState(RecoilState& recoilState, double deltaTime, cMultiMesh* weapon) {
+		if (!recoilState.isRecoiling) return;
+
+		recoilState.recoilTime += deltaTime;
+
+		float recoilProgress = recoilState.recoilTime / recoilState.recoilDuration;
+		float forceMagnitude = recoilState.currentForce.length() * (1.0 - recoilProgress) * sin(recoilProgress * M_PI);
+
+		cVector3d currentForce = recoilState.currentForce;
+		currentForce.normalize();
+		currentForce.mul(forceMagnitude);
+
+		hapticDevice->setForce(currentForce);
+
+		cMatrix3d rotationDelta;
+		rotationDelta.setAxisAngleRotationDeg(cVector3d(1, 0, 0), forceMagnitude * 0.5);
+		recoilState.currentRotation = recoilState.currentRotation * rotationDelta;
+
+		weapon->setLocalRot(weapon->getLocalRot() * recoilState.currentRotation);
+
+		if (recoilState.recoilTime >= recoilState.recoilDuration) {
+			recoilState.isRecoiling = false;
+			recoilState.currentForce.zero();
+			recoilState.currentTorque.zero();
+		}
 	}
-}
-
-// Function to set initial weapon orientations
-void setInitialWeaponOrientations() {
-	// Pistol orientation
-	pistolOrientation.identity();
-	pistolOrientation.rotateAboutGlobalAxisDeg(1, 0, 0, 115); // - up + down
-	pistolOrientation.rotateAboutGlobalAxisDeg(0, 1, 0, 0);
-	pistolOrientation.rotateAboutGlobalAxisDeg(0, 0, 1, -90);
-	weapon_pistol->setLocalRot(pistolOrientation);
-
-	// Dragunov orientation
-	dragunovOrientation.identity();
-	dragunovOrientation.rotateAboutGlobalAxisDeg(1, 0, 0, 90); // lean right left (- right + left)
-	dragunovOrientation.rotateAboutGlobalAxisDeg(0, 1, 0, -30); // + up - down 
-	dragunovOrientation.rotateAboutGlobalAxisDeg(0, 0, 1, 0);
-	weapon_dragunov->setLocalRot(dragunovOrientation);
-
-	// Rifle orientation
-	rifleOrientation.identity();
-	rifleOrientation.rotateAboutGlobalAxisDeg(1, 0, 0, 180);
-	rifleOrientation.rotateAboutGlobalAxisDeg(0, 1, 0, 145);
-	rifleOrientation.rotateAboutGlobalAxisDeg(0, 0, 1, 0);
-	weapon_rifle->setLocalRot(rifleOrientation);
-}
-
-void updateHaptics(void)
-{
-	setInitialWeaponOrientations(); // Call this at the start
-
-	cPrecisionClock clock;
-	clock.reset();
-	simulationRunning = true;
-	simulationFinished = false;
-
-	while (simulationRunning)
+	// Modify the updateHaptics function
+	void updateHaptics(void)
 	{
-		frequencyCounter.signal(1);
+		setInitialWeaponOrientations();
 
-		// compute global reference frames for each object
-		world->computeGlobalPositions(true);
+		auto lastFireTime = std::chrono::high_resolution_clock::now();
 
-		// update position and orientation of tool
-		tool->updateFromDevice();
+		simulationRunning = true;
+		simulationFinished = false;
 
-		// Update weapon orientation
-		updateWeaponOrientation(hapticDevice);
+		pistolRecoilState.canFire = true;
+		rifleRecoilState.canFire = true;
+		sniperRecoilState.canFire = true;
 
-		// Declare button states
-		bool button0 = false;
-		bool button1 = false;
-		bool button2 = false;
-		bool button3 = false;
+		while (simulationRunning)
+		{
+			auto currentTime = std::chrono::high_resolution_clock::now();
+			double deltaTime = std::chrono::duration<double>(currentTime - lastFireTime).count();
 
-		// Retrieve the state of each button
-		hapticDevice->getUserSwitch(0, button0);
-		hapticDevice->getUserSwitch(1, button1);
-		hapticDevice->getUserSwitch(2, button2);
-		hapticDevice->getUserSwitch(3, button3);
+			frequencyCounter.signal(1);
 
-		// Button 0: Fire weapon (Recoil effect)
-		if (button0) {
-			// Apply recoil effect
-			cMatrix3d recoilRotation;
-			recoilRotation.identity();
-			/*recoilRotation.rotateAboutGlobalAxisDeg(1, 0, 0, 60);
-			recoilRotation.rotateAboutGlobalAxisDeg(0, 0, 1, -90);*/
-			recoilRotation.rotateAboutGlobalAxisDeg(1, 0, 0, 10); // Reduced angle for subtler effect
+			world->computeGlobalPositions(true);
+			tool->updateFromDevice();
+			updateWeaponOrientation(hapticDevice);
 
+			bool button0, button1, button2, button3;
+			hapticDevice->getUserSwitch(0, button0);
+			hapticDevice->getUserSwitch(1, button1);
+			hapticDevice->getUserSwitch(2, button2);
+			hapticDevice->getUserSwitch(3, button3);
 
-			/*if (isPistolLoaded) weapon_pistol->setLocalRot(recoilRotation);
-			else if (isDragunovLoaded) weapon_dragunov->setLocalRot(recoilRotation);
-			else if (isRifleLoaded) weapon_rifle->setLocalRot(recoilRotation);*/
+			// Button 0: Fire weapon
+			if (button0) {
+				if (isPistolLoaded && pistolRecoilState.canFire) {
+					fireWeapon(weapon_pistol, FIRE_RATE_PISTOL, pistolRecoilState);
+					lastFireTime = currentTime;
+				}
+				else if (isDragunovLoaded && sniperRecoilState.canFire) {
+					fireWeapon(weapon_dragunov, FIRE_RATE_SNIPER, sniperRecoilState);
+					lastFireTime = currentTime;
+				}
+				else if (isRifleLoaded) {
+					if (deltaTime >= FIRE_RATE_RIFLE * 0.9 || isBurstFiring) {
+						fireWeapon(weapon_rifle, FIRE_RATE_RIFLE, rifleRecoilState);
+						lastFireTime = currentTime;
+
+						if (!isBurstFiring) {
+							isBurstFiring = true;
+							burstCount = 1;
+						}
+						else {
+							burstCount++;
+							if (burstCount >= BURST_SIZE) {
+								isBurstFiring = false;
+								burstCount = 0;
+							}
+						}
+					}
+				}
+			}
+			else {
+				isBurstFiring = false;
+				burstCount = 0;
+			}
+
+			// Update recoil states
 			if (isPistolLoaded) {
-				weapon_pistol->setLocalRot(weapon_pistol->getLocalRot() * recoilRotation);
+				updateRecoilState(pistolRecoilState, deltaTime, weapon_pistol);
+				if (deltaTime >= PISTOL_COOLDOWN) {
+					pistolRecoilState.canFire = true;
+				}
 			}
 			else if (isDragunovLoaded) {
-				weapon_dragunov->setLocalRot(weapon_dragunov->getLocalRot() * recoilRotation);
+				updateRecoilState(sniperRecoilState, deltaTime, weapon_dragunov);
+				if (deltaTime >= FIRE_RATE_SNIPER) {
+					sniperRecoilState.canFire = true;
+				}
 			}
 			else if (isRifleLoaded) {
-				weapon_rifle->setLocalRot(weapon_rifle->getLocalRot() * recoilRotation);
+				updateRecoilState(rifleRecoilState, deltaTime, weapon_rifle);
+				rifleRecoilState.canFire = true; // Rifle can always fire due to automatic nature
 			}
 
-			// Define recoil parameters and apply force
-			float vf = 6.153;
-			float tr = 0.003;
-			cVector3d direction(1, 0, 0);
-			applyForce(direction, vf, tr);
+			// Weapon switching logic (unchanged)
+			if (button1 && !isPistolLoaded) {
+				tool->m_image = weapon_pistol;
+				isPistolLoaded = true;
+				isDragunovLoaded = false;
+				isRifleLoaded = false;
+				updateWeaponLabel();
+			}
+			else if (button2 && !isRifleLoaded) {
+				tool->m_image = weapon_rifle;
+				isPistolLoaded = false;
+				isDragunovLoaded = false;
+				isRifleLoaded = true;
+				updateWeaponLabel();
+			}
+			else if (button3 && !isDragunovLoaded) {
+				tool->m_image = weapon_dragunov;
+				isPistolLoaded = false;
+				isDragunovLoaded = true;
+				isRifleLoaded = false;
+				updateWeaponLabel();
+			}
+
+			tool->computeInteractionForces();
+			tool->applyToDevice();
 		}
 
-		// Button 1: Switch to Pistol
-		if (button1 && !isPistolLoaded) {
-			tool->m_image = weapon_pistol;
-			isPistolLoaded = true;
-			isDragunovLoaded = false;
-			isRifleLoaded = false;
-			updateWeaponLabel();
-		}
-
-		// Button 2: Switch to Rifle
-		if (button2 && !isRifleLoaded) {
-			tool->m_image = weapon_rifle;
-			isPistolLoaded = false;
-			isDragunovLoaded = false;
-			isRifleLoaded = true;
-			updateWeaponLabel();
-		}
-
-		// Button 3: Switch to Dragunov (Sniper)
-		if (button3 && !isDragunovLoaded) {
-			tool->m_image = weapon_dragunov;
-			isPistolLoaded = false;
-			isDragunovLoaded = true;
-			isRifleLoaded = false;
-			updateWeaponLabel();
-		}
-
-		// compute interaction forces
-		tool->computeInteractionForces();
-
-		// send forces to haptic device
-		tool->applyToDevice();
+		simulationFinished = true;
 	}
-
-	simulationFinished = true;
-}
