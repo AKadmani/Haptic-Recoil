@@ -65,14 +65,10 @@ void fireWeapon(cMultiMesh* weapon, double fireRate);
 
 __int64 time_start, time_end;
 
-// Add these global variables
 const int BURST_SIZE = 3;
 int burstCount = 0;
 bool isBurstFiring = false;
-// Add these constants at the top of your file
-const double PISTOL_COOLDOWN = 0.5; // 0.5 seconds cooldown for pistol
-const double SNIPER_RECOIL_MULTIPLIER = 2.0; // Stronger recoil for sniper
-
+const double PISTOL_COOLDOWN = 0.9; // 0.5 seconds cooldown for pistol
 
 // Function to apply texture to a weapon model
 void applyTextureToWeapon(cMultiMesh* weapon, const std::string& texturePath) {
@@ -504,9 +500,13 @@ void updateGraphics(void)
 		cVector3d direction(1 + ((rand() % 20) - 10) / 100.0, ((rand() % 20) - 10) / 100.0, 0.3 + ((rand() % 20) - 10) / 100.0);
 		direction.normalize();
 
-		if (weapon == weapon_dragunov) {
-			vf *= SNIPER_RECOIL_MULTIPLIER;
-			tr *= SNIPER_RECOIL_MULTIPLIER;
+		// Increase force for pistol and sniper
+		if (weapon == weapon_pistol) {
+			vf *= 1.5;  // Increase pistol force by 50%
+		}
+		else if (weapon == weapon_dragunov) {
+			vf *= 3.0;  // Triple the force for sniper
+			// tr *= 2.0;  // Increase duration of force for sniper
 		}
 
 		applyForce(direction, vf, tr, recoilState);
@@ -584,28 +584,10 @@ void updateGraphics(void)
 					fireWeapon(weapon_dragunov, FIRE_RATE_SNIPER, sniperRecoilState);
 					lastFireTime = currentTime;
 				}
-				else if (isRifleLoaded) {
-					if (deltaTime >= FIRE_RATE_RIFLE * 0.9 || isBurstFiring) {
-						fireWeapon(weapon_rifle, FIRE_RATE_RIFLE, rifleRecoilState);
-						lastFireTime = currentTime;
-
-						if (!isBurstFiring) {
-							isBurstFiring = true;
-							burstCount = 1;
-						}
-						else {
-							burstCount++;
-							if (burstCount >= BURST_SIZE) {
-								isBurstFiring = false;
-								burstCount = 0;
-							}
-						}
-					}
+				else if (isRifleLoaded && deltaTime >= FIRE_RATE_RIFLE) {
+					fireWeapon(weapon_rifle, FIRE_RATE_RIFLE, rifleRecoilState);
+					lastFireTime = currentTime;
 				}
-			}
-			else {
-				isBurstFiring = false;
-				burstCount = 0;
 			}
 
 			// Update recoil states
