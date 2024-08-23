@@ -149,6 +149,11 @@ cVector3d current_torque;
 cVector3d zero_vector;
 float deviation_angle;
 
+int elapsed_time;
+
+bool pistol = true;
+bool rifle, sniper;
+
 //------------------------------------------------------------------------------
 // DECLARED FUNCTIONS
 //------------------------------------------------------------------------------
@@ -176,7 +181,11 @@ void updateHaptics(void);
 __int64 currentTimeMillis();
 void pistol_force(void);
 void rifle_force(void);
+void sniper_force(void);
 
+void apply_pistol_force(void);
+void apply_rifle_force(void);
+void apply_sniper_force(void);
 //==============================================================================
 /*
 DEMO:   01-mydevice.cpp
@@ -554,15 +563,12 @@ void updateHaptics(void)
 		// READ HAPTIC DEVICE
 		/////////////////////////////////////////////////////////////////////
 
-		int diff;
-		
 		if (is_pressed){
-			diff = currentTimeMillis() - time_start;
+			elapsed_time = currentTimeMillis() - time_start;
 		}
 		else {
-			diff = 0;
+			elapsed_time = 0;
 		}
-
 
 		// read position 
 		cVector3d position;
@@ -589,11 +595,15 @@ void updateHaptics(void)
 		hapticDevice->getGripperAngularVelocity(gripperAngularVelocity);
 
 		// read user-switch status (button 0)
-		bool button0, button1;
+		bool button0, button1, button2, button3;
 		button0 = false; 
 		button1 = false;
+		button2 = false;
+		button3 = false;
 		hapticDevice->getUserSwitch(0, button0);
 		hapticDevice->getUserSwitch(1, button1);
+		hapticDevice->getUserSwitch(2, button2);
+		hapticDevice->getUserSwitch(3, button3);
 		
 		if (!is_pressed  && button0){
 			is_pressed = true;
@@ -601,16 +611,14 @@ void updateHaptics(void)
 		}
 
 		if (is_pressed && button0){
-			if (diff < 100){
-				rifle_force();
-				hapticDevice->setForceAndTorque(current_force, current_torque*deviation_angle);
+			if (pistol){
+				apply_pistol_force();
 			}
-			else if (diff < 200) {
-				hapticDevice->setForce(zero_vector);
+			else if (rifle){
+				apply_rifle_force();
 			}
-			else{
-				time_start = currentTimeMillis();
-				diff = 0;
+			else if (sniper){
+				apply_sniper_force();
 			}
 		}
 
@@ -625,10 +633,25 @@ void updateHaptics(void)
 
 
 		if (button1){
-			cVector3d zero(0, 0, 0);
-			hapticDevice->setForce(zero_vector);
+			cout << "pistol" << endl;
+			pistol = true;
+			rifle = false;
+			sniper = false;
 		}
 
+		if (button2){
+			cout << "rifle" << endl;
+			pistol = false;
+			rifle = true;
+			sniper = false;
+		}
+
+		if (button3){
+			cout << "sniper" << endl;
+			pistol = false;
+			rifle = false;
+			sniper = true;
+		}
 
 		/////////////////////////////////////////////////////////////////////
 		// UPDATE 3D CURSOR MODEL
@@ -690,8 +713,111 @@ void rifle_force(void){
 	cVector3d direction(1, 0, 0);
 	current_force = force*direction*100;
 
-	float h_axis = 0.0007;
+	float h_axis = 0.065;
 	current_torque = h_axis * current_force;
 	float moment_of_inertia = (h_axis*h_axis)*mf;
 	deviation_angle = (h_axis*mb*barrel_length) / moment_of_inertia;
+}
+
+void sniper_force(void){
+	float mf = 4.3;	// mass of firearm
+	float vf = 3.265;	// velocity of firearm
+	float mb = 0.0113;	// mass of bullet 
+	float barrel_length = 0.62;	// barrel length
+	float tr = 0.01;	// recoil time
+
+	float force = 0.15 * (vf / tr);
+
+	cVector3d direction(1, 0, 0);
+	current_force = force*direction;
+
+	float h_axis = 0.045;
+	current_torque = h_axis * current_force;
+	float moment_of_inertia = (h_axis*h_axis)*mf;
+	deviation_angle = (h_axis*mb*barrel_length) / moment_of_inertia;
+}
+
+void apply_pistol_force(void){
+	float mf = 1.1;	// mass of firearm
+	float vf = 3.978;	// velocity of firearm
+	float mb = 0.015;	// mass of bullet 
+	float barrel_length = 0.127;	// barrel length
+	float tr = 0.003;	// recoil time
+
+	float force = 0.15 * (vf / tr);
+
+	cVector3d direction(1, 0, 0);
+	current_force = force*direction;
+
+	float h_axis = 0.0678;
+	current_torque = h_axis * current_force;
+	float moment_of_inertia = (h_axis*h_axis)*mf;
+	deviation_angle = (h_axis*mb*barrel_length) / moment_of_inertia;
+
+	if (elapsed_time < 30){
+		hapticDevice->setForceAndTorque(current_force, current_torque*deviation_angle);
+	}
+	else {
+		hapticDevice->setForce(zero_vector);
+	}
+
+}
+
+void apply_rifle_force(void){
+	float mf = 3.9;	// mass of firearm
+	float vf = 2.2688;	// velocity of firearm
+	float mb = 0.0079;	// mass of bullet 
+	float barrel_length = 0.415;	// barrel length
+	float tr = 0.06;	// recoil time
+
+	float force = 0.15 * (vf / tr);
+
+	cVector3d direction(1, 0, 0);
+	current_force = force*direction * 100;
+
+	float h_axis = 0.065;
+	current_torque = h_axis * current_force;
+	float moment_of_inertia = (h_axis*h_axis)*mf;
+	deviation_angle = (h_axis*mb*barrel_length) / moment_of_inertia;
+
+	if (elapsed_time < 60){
+		hapticDevice->setForceAndTorque(current_force, current_torque*deviation_angle);
+	}
+	else if (elapsed_time < 120) {
+		hapticDevice->setForce(zero_vector);
+	}
+	else{
+		time_start = currentTimeMillis();
+		elapsed_time = 0;
+	}
+
+}
+
+void apply_sniper_force(void){
+	float mf = 4.3;	// mass of firearm
+	float vf = 3.265;	// velocity of firearm
+	float mb = 0.0113;	// mass of bullet 
+	float barrel_length = 0.62;	// barrel length
+	float tr = 0.01;	// recoil time
+
+	float force = 0.15 * (vf / tr);
+
+	cVector3d direction(1, 0, 0);
+	current_force = force*direction;
+
+	float h_axis = 0.045;
+	current_torque = h_axis * current_force;
+	float moment_of_inertia = (h_axis*h_axis)*mf;
+	deviation_angle = (h_axis*mb*barrel_length) / moment_of_inertia;
+
+	if (elapsed_time < 100){
+		hapticDevice->setForceAndTorque(current_force, current_torque*deviation_angle);
+	}
+	else if (elapsed_time < 500) {
+		hapticDevice->setForce(zero_vector);
+	}
+	else {
+		hapticDevice->setForce(zero_vector);
+	}
+
 }
