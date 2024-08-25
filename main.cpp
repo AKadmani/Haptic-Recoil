@@ -1,4 +1,7 @@
 #include "chai3d.h"
+#include <mutex>
+#include <chrono>
+
 //------------------------------------------------------------------------------
 using namespace chai3d;
 using namespace std;
@@ -108,6 +111,14 @@ float deviation_angle;
 
 // global zero vector for ease of coding
 cVector3d zero_vector(0, 0, 0);
+
+// New mutex declarations
+std::mutex deviceMutex;
+std::mutex weaponMutex;
+
+// New declarations for optimization
+volatile bool graphicsUpdateFlag = false;
+
 //------------------------------------------------------------------------------
 // DECLARED MACROS
 //------------------------------------------------------------------------------
@@ -145,15 +156,18 @@ void applyTextureToWeapon(cMultiMesh* weapon, const std::string& texturePath);
 void setInitialWeaponOrientations();
 
 // update the orientation of the weapon
-void updateWeaponOrientation(cGenericHapticDevicePtr device);
+void updateWeaponOrientation(cGenericHapticDevicePtr device, const cMatrix3d& deviceRotation);
 
 // update the label with the current weapon
 void updateWeaponLabel(void);
 
 // main functions for visual & haptic rendering of the weapons
 void apply_pistol_force(void);
+void apply_pistol_rotation(void);
 void apply_sniper_force(void);
+void apply_sniper_rotation(void);
 void apply_rifle_force(void);
+void apply_rifle_rotation(void);
 
 //------------------------------------------------------------------------------
 
@@ -346,7 +360,7 @@ int main(int argc, char* argv[])
 		close();
 		return (-1);
 	}
-	
+
 	// Initialize Dragunov model (Sniper)
 	weapon_dragunov = new cMultiMesh();
 	fileload = weapon_dragunov->loadFromFile(RESOURCE_PATH("../resources/dragunov.obj"));
@@ -490,6 +504,15 @@ void graphicsTimer(int data)
 
 void updateGraphics(void)
 {
+	// Lock mutexes to ensure consistent state
+	std::lock_guard<std::mutex> deviceLock(deviceMutex);
+	std::lock_guard<std::mutex> weaponLock(weaponMutex);
+
+	// Check if update is needed
+	if (!graphicsUpdateFlag) {
+		return;
+	}
+
 	// update shadow maps (if any)
 	world->updateShadowMaps(false, mirroredDisplay);
 
@@ -506,6 +529,8 @@ void updateGraphics(void)
 	GLenum err;
 	err = glGetError();
 	if (err != GL_NO_ERROR) cout << "Error:  %s\n" << gluErrorString(err);
+
+	graphicsUpdateFlag = false;
 }
 
 //------------------------------------------------------------------------------
@@ -516,88 +541,116 @@ void updateHaptics(void)
 
 	simulationRunning = true;
 	simulationFinished = false;
-	
+
+	// Use standard chrono for timing
+	auto lastUpdate = std::chrono::high_resolution_clock::now();
+	const std::chrono::milliseconds updatePeriod(1); // 1ms update period
+
 	while (simulationRunning)
 	{
+		auto now = std::chrono::high_resolution_clock::now();
+		if (now - lastUpdate >= updatePeriod)
+		{
+			{
+				// Lock mutexes to ensure consistent state
+				std::lock_guard<std::mutex> deviceLock(deviceMutex);
+				std::lock_guard<std::mutex> weaponLock(weaponMutex);
 
-		world->computeGlobalPositions(true);
-		tool->updateFromDevice();
-		updateWeaponOrientation(hapticDevice);
+				world->computeGlobalPositions(true);
+				tool->updateFromDevice();
 
-		// check if the elapsed time needs to be calculated
-		if (is_pressed){
-			elapsed_time = currentTimeMillis() - time_start;
-		}
-		else {
-			elapsed_time = 0;
-		}
-
-		// read user-switch statuses
-		bool button0, button1, button2, button3;
-		button0 = false;
-		button1 = false;
-		button2 = false;
-		button3 = false;
-		hapticDevice->getUserSwitch(0, button0);
-		hapticDevice->getUserSwitch(1, button1);
-		hapticDevice->getUserSwitch(2, button2);
-		hapticDevice->getUserSwitch(3, button3);
-
-		// main simulator logic
-		if (!is_pressed  && button0){
-			is_pressed = true;
-			time_start = currentTimeMillis();
-		}
-
-		if (is_pressed && button0){
-			if (isPistolLoaded){
-				apply_pistol_force();
+				cMatrix3d deviceRotation;
+				hapticDevice->getRotation(deviceRotation);
+				updateWeaponOrientation(hapticDevice, deviceRotation);
 			}
-			else if (isRifleLoaded){
-				apply_rifle_force();
+
+			// check if the elapsed time needs to be calculated
+			if (is_pressed) {
+				elapsed_time = currentTimeMillis() - time_start;
 			}
-			else if (isDragunovLoaded){
-				apply_sniper_force();
+			else {
+				elapsed_time = 0;
 			}
+
+			// read user-switch statuses
+			bool button0, button1, button2, button3;
+			button0 = false;
+			button1 = false;
+			button2 = false;
+			button3 = false;
+			hapticDevice->getUserSwitch(0, button0);
+			hapticDevice->getUserSwitch(1, button1);
+			hapticDevice->getUserSwitch(2, button2);
+			hapticDevice->getUserSwitch(3, button3);
+
+			// main simulator logic
+			if (!is_pressed && button0) {
+				is_pressed = true;
+				time_start = currentTimeMillis();
+			}
+
+			if (is_pressed && button0) {
+				if (isPistolLoaded) {
+					apply_pistol_force();
+					//apply_pistol_rotation();
+				}
+				else if (isRifleLoaded) {
+					apply_rifle_force();
+					//apply_rifle_rotation();
+				}
+				else if (isDragunovLoaded) {
+					apply_sniper_force();
+					//apply_sniper_rotation();
+				}
+			}
+
+			if (!(is_pressed && button0)) {
+				hapticDevice->setForce(zero_vector);
+			}
+
+			if (is_pressed && !button0) {
+				hapticDevice->setForce(zero_vector);
+				is_pressed = false;
+			}
+
+			// Weapon switching logic
+			if (button1 && !isPistolLoaded) {
+				tool->m_image = weapon_pistol;
+				isPistolLoaded = true;
+				isDragunovLoaded = false;
+				isRifleLoaded = false;
+				updateWeaponLabel();
+			}
+			else if (button2 && !isRifleLoaded) {
+				tool->m_image = weapon_rifle;
+				isPistolLoaded = false;
+				isDragunovLoaded = false;
+				isRifleLoaded = true;
+				updateWeaponLabel();
+			}
+			else if (button3 && !isDragunovLoaded) {
+				tool->m_image = weapon_dragunov;
+				isPistolLoaded = false;
+				isDragunovLoaded = true;
+				isRifleLoaded = false;
+				updateWeaponLabel();
+			}
+
+			{
+				// Lock mutexes before updating device state
+				std::lock_guard<std::mutex> deviceLock(deviceMutex);
+				std::lock_guard<std::mutex> weaponLock(weaponMutex);
+
+				tool->computeInteractionForces();
+				tool->applyToDevice();
+			}
+
+			// signal that graphics need updating
+			graphicsUpdateFlag = true;
+
+			// Update the last update time
+			lastUpdate = now;
 		}
-
-		if (!(is_pressed && button0)){
-			hapticDevice->setForce(zero_vector);
-		}
-
-		if (is_pressed && !button0){
-			hapticDevice->setForce(zero_vector);
-			is_pressed = false;
-		}
-
-		// Weapon switching logic
-
-		if (button1 && !isPistolLoaded) {
-			tool->m_image = weapon_pistol;
-			isPistolLoaded = true;
-			isDragunovLoaded = false;
-			isRifleLoaded = false;
-			updateWeaponLabel();
-		}
-
-		else if (button2 && !isRifleLoaded) {
-			tool->m_image = weapon_rifle;
-			isPistolLoaded = false;
-			isDragunovLoaded = false;
-			isRifleLoaded = true;
-			updateWeaponLabel();
-		}
-
-		else if (button3 && !isDragunovLoaded) {
-			tool->m_image = weapon_dragunov;
-			isPistolLoaded = false;
-			isDragunovLoaded = true;
-			isRifleLoaded = false;
-			updateWeaponLabel();
-		}
-
-		tool->computeInteractionForces();
-		//tool->applyToDevice();
 	}
 
 	simulationFinished = true;
@@ -618,9 +671,9 @@ void applyTextureToWeapon(cMultiMesh* weapon, const std::string& texturePath) {
 	cTexture2dPtr weaponTexture = cTexture2d::create();
 	bool fileload = weaponTexture->loadFromFile(RESOURCE_PATH(texturePath.c_str()));
 	if (!fileload) {
-	#if defined(_MSVC)
-			fileload = weaponTexture->loadFromFile((std::string("../../../bin/resources/") + texturePath).c_str());
-	#endif
+#if defined(_MSVC)
+		fileload = weaponTexture->loadFromFile((std::string("../../../bin/resources/") + texturePath).c_str());
+#endif
 	}
 	if (!fileload) {
 		cout << "Error - Texture file failed to load correctly: " << texturePath << endl;
@@ -664,11 +717,7 @@ void setInitialWeaponOrientations(void) {
 //------------------------------------------------------------------------------
 
 // Function to update weapon orientation based on device rotation
-void updateWeaponOrientation(cGenericHapticDevicePtr device) {
-	cMatrix3d deviceRotation;
-	device->getRotation(deviceRotation);
-
-	// Combine device rotation with initial weapon orientation
+void updateWeaponOrientation(cGenericHapticDevicePtr device, const cMatrix3d& deviceRotation) {
 	if (isPistolLoaded) {
 		weapon_pistol->setLocalRot(deviceRotation * pistolOrientation);
 	}
@@ -697,6 +746,8 @@ void updateWeaponLabel() {
 //------------------------------------------------------------------------------
 
 void apply_pistol_force(void){
+	//std::lock_guard<std::mutex> deviceLock(deviceMutex);
+
 	float mf = 1.1;	// mass of firearm
 	float vf = 3.978;	// velocity of firearm
 	float mb = 0.015;	// mass of bullet 
@@ -720,13 +771,14 @@ void apply_pistol_force(void){
 		// apply the calculated force and torque
 		hapticDevice->setForceAndTorque(current_force, current_torque*deviation_angle);
 
-		//// visually render the recoil
-		//cMatrix3d recoilRotation;
-		//recoilRotation.identity();
-		//recoilRotation.rotateAboutGlobalAxisDeg(1, 0, 0, 5 + (rand() % 5));
+		// Orientation Matrix :: Pistol
+		cMatrix3d pistolRecoil;
+		pistolRecoil.identity();
+		pistolRecoil.rotateAboutGlobalAxisDeg(1, 0, 0, 100); // - up + down
+		pistolRecoil.rotateAboutGlobalAxisDeg(0, 1, 0, 0);
+		pistolRecoil.rotateAboutGlobalAxisDeg(0, 0, 1, -90);
+		weapon_pistol->setLocalRot(pistolRecoil);
 
-		//weapon_pistol->setLocalRot(weapon_pistol->getLocalRot() * recoilRotation);
-		
 	}
 	else {
 		hapticDevice->setForce(zero_vector);
@@ -736,6 +788,8 @@ void apply_pistol_force(void){
 //------------------------------------------------------------------------------
 
 void apply_rifle_force(void){
+	//std::lock_guard<std::mutex> deviceLock(deviceMutex);
+
 	float mf = 3.9;	// mass of firearm
 	float vf = 2.2688;	// velocity of firearm
 	float mb = 0.0079;	// mass of bullet 
@@ -755,18 +809,18 @@ void apply_rifle_force(void){
 	float moment_of_inertia = (h_axis*h_axis)*mf;
 	deviation_angle = (h_axis*mb*barrel_length) / moment_of_inertia;
 
-	
+
 	if (elapsed_time < 60){
 
 		// apply the calculated force and torque
 		hapticDevice->setForceAndTorque(current_force, current_torque*deviation_angle);
 
-		//// visually render the recoil
-		//cMatrix3d recoilRotation;
-		//recoilRotation.identity();
-		//recoilRotation.rotateAboutGlobalAxisDeg(1, 0, 0, 5 + (rand() % 5));
-
-		//weapon_rifle->setLocalRot(weapon_rifle->getLocalRot() * recoilRotation);
+		cMatrix3d rifleRecoil;
+		rifleRecoil.identity();
+		rifleRecoil.rotateAboutGlobalAxisDeg(1, 0, 0, 180);
+		rifleRecoil.rotateAboutGlobalAxisDeg(0, 1, 0, 145);
+		rifleRecoil.rotateAboutGlobalAxisDeg(0, 0, 1, 0);
+		weapon_rifle->setLocalRot(rifleRecoil);
 	}
 	else if (elapsed_time < 120) {
 		hapticDevice->setForce(zero_vector);
@@ -779,44 +833,68 @@ void apply_rifle_force(void){
 
 //------------------------------------------------------------------------------
 
-void apply_sniper_force(void){
-	float mf = 4.3;	// mass of firearm
-	float vf = 3.265;	// velocity of firearm
-	float mb = 0.0113;	// mass of bullet 
-	float barrel_length = 0.62;	// barrel length
-	float tr = 0.01;	// recoil time
+void apply_sniper_force(void) {
+    //std::lock_guard<std::mutex> deviceLock(deviceMutex);
+    float mf = 4.3;	// mass of firearm
+    float vf = 3.265;	// velocity of firearm
+    float mb = 0.0113;	// mass of bullet 
+    float barrel_length = 0.62;	// barrel length
+    float tr = 0.005;	// reduced recoil time for higher initial force
+    float force = 0.15 * (vf / tr);
+    
+    cVector3d direction(1 + ((rand() % 20) - 10) / 100.0, ((rand() % 20) - 10) / 100.0, 0.3 + ((rand() % 20) - 10) / 100.0);
+    direction.normalize();
+    
+    cVector3d initial_force = force * direction * 5.0; // Multiplied by 5 for very high initial force
+    float h_axis = 0.045;
+    cVector3d initial_torque = h_axis * initial_force;
+    float moment_of_inertia = (h_axis*h_axis)*mf;
+    float deviation_angle = (h_axis*mb*barrel_length) / moment_of_inertia;
 
-	float force = 0.15 * (vf / tr);
+    const int initial_spike_duration = 20;  // ms
+    const int recoil_duration = 100;  // ms
+    const int recovery_duration = 380;  // ms
+    const int total_duration = initial_spike_duration + recoil_duration + recovery_duration;
 
-	cVector3d direction(1 + ((rand() % 20) - 10) / 100.0, ((rand() % 20) - 10) / 100.0, 0.3 + ((rand() % 20) - 10) / 100.0);
-	direction.normalize();
+    if (elapsed_time < total_duration) {
+        cVector3d current_force;
+        cVector3d current_torque;
 
-	current_force = force*direction;
+        if (elapsed_time < initial_spike_duration) {
+            // Very high initial force
+            float spike_factor = 1.0 - (float)elapsed_time / initial_spike_duration;
+            current_force = initial_force * spike_factor;
+            current_torque = initial_torque * spike_factor * deviation_angle;
+        } else if (elapsed_time < initial_spike_duration + recoil_duration) {
+            // Rapid decay after initial spike
+            float decay_time = elapsed_time - initial_spike_duration;
+            float decay_factor = exp(-10.0 * decay_time / recoil_duration);
+            current_force = initial_force * decay_factor * 0.2; // 0.2 to reduce force after initial spike
+            current_torque = initial_torque * decay_factor * deviation_angle * 0.2;
+        } else {
+            // Subtle recovery force in the opposite direction
+            float recovery_progress = (float)(elapsed_time - initial_spike_duration - recoil_duration) / recovery_duration;
+            float recovery_factor = exp(-3.0 * recovery_progress) * 0.05;  // 0.05 to make it more subtle
+            current_force = -initial_force * recovery_factor;
+            current_torque = -initial_torque * recovery_factor * deviation_angle;
+        }
 
-	float h_axis = 0.045;
-	current_torque = h_axis * current_force;
-	float moment_of_inertia = (h_axis*h_axis)*mf;
-	deviation_angle = (h_axis*mb*barrel_length) / moment_of_inertia;
+        // Apply the calculated force and torque
+        hapticDevice->setForceAndTorque(current_force, current_torque);
 
-	if (elapsed_time < 100){
-
-		// apply the calculated force and torque
-		hapticDevice->setForceAndTorque(current_force, current_torque*deviation_angle);
-
-		//// visually render the recoil
-		//cMatrix3d recoilRotation;
-		//recoilRotation.identity();
-		//recoilRotation.rotateAboutGlobalAxisDeg(1, 0, 0, 5 + (rand() % 5));
-
-		//weapon_dragunov->setLocalRot(weapon_dragunov->getLocalRot() * recoilRotation);
-	}
-	else if (elapsed_time < 500) {
-		hapticDevice->setForce(zero_vector);
-	}
-	else {
-		hapticDevice->setForce(zero_vector);
-	}
-
+        // Orientation Matrix :: Sniper
+        cMatrix3d sniperRecoil;
+        sniperRecoil.identity();
+        
+        float recoil_progress = (float)elapsed_time / total_duration;
+        float recoil_angle_x = 90.0 * (1.0 - recoil_progress);
+        float recoil_angle_y = -2.0 * (1.0 - recoil_progress);
+        
+        sniperRecoil.rotateAboutGlobalAxisDeg(1, 0, 0, recoil_angle_x); // lean right left (- right + left)
+        sniperRecoil.rotateAboutGlobalAxisDeg(0, 1, 0, recoil_angle_y); // + up - down 
+        sniperRecoil.rotateAboutGlobalAxisDeg(0, 0, 1, 0);
+        weapon_dragunov->setLocalRot(sniperRecoil);
+    } else {
+        hapticDevice->setForce(zero_vector);
+    }
 }
-
-//------------------------------------------------------------------------------
