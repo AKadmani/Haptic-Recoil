@@ -54,6 +54,7 @@ float deviation_angle;
 
 __int64 coolOfftime = 0;
 bool sniperFiring = false;
+bool pistolFiring = false;
 
 cVector3d zero_vector(0, 0, 0);
 
@@ -64,6 +65,9 @@ volatile bool graphicsUpdateFlag = false;
 
 const double CAMERA_SPEED = 0.1;
 bool moveForward = false, moveBackward = false, moveLeft = false, moveRight = false;
+
+cShapeLine* bulletTraj;
+cShapeSphere* target;
 //------------------------------------------------------------------------------
 // DECLARED MACROS
 //------------------------------------------------------------------------------
@@ -153,13 +157,12 @@ int main(int argc, char* argv[])
 	tool = new cToolCursor(world);
 	world->addChild(tool);
 	tool->setHapticDevice(hapticDevice);
-	double toolRadius = 0.01;
+	double toolRadius = 0.001;
 	tool->setRadius(toolRadius);
 	tool->setWorkspaceRadius(1.0);
 	tool->setWaitForSmallForce(true);
 	tool->start();
 	tool->setUseTransparency(true);
-	tool->m_material->setRed();
 
 	// read the scale factor between the physical workspace of the haptic device and the virtual workspace defined for the tool
 	double workspaceScaleFactor = tool->getWorkspaceScaleFactor();
@@ -181,6 +184,11 @@ int main(int argc, char* argv[])
 	weaponNameLabel->setText("Current Weapon: M1911 PISTOL");
 	camera->m_frontLayer->addChild(weaponNameLabel);
 	weaponNameLabel->setLocalPos(10, 10);
+
+	target = new cShapeSphere(0.04);
+	target->setLocalPos(0.0, 0.0, 0.2);
+	target->m_material->setRed();
+	world->addChild(target);
 
 	// CREATE WEAPONS
 	weapon_pistol = new cMultiMesh();
@@ -258,12 +266,20 @@ int main(int argc, char* argv[])
 
 	cVector3d devicePosition;
 	hapticDevice->getPosition(devicePosition);
+	weapon_pistol->setLocalPos(devicePosition);
 
 	// set materials for the weapons
 	cMaterial mat;
 	weapon_pistol->setMaterial(mat);
 	weapon_dragunov->setMaterial(mat);
 	weapon_rifle->setMaterial(mat);
+
+	bulletTraj = new cShapeLine(tool->getLocalPos(), target->getLocalPos());
+	bulletTraj->setLineWidth(2.0);
+	bulletTraj->m_colorPointA.set(0.0, 0.0, 0.0);
+	bulletTraj->m_colorPointB.set(1.0, 0.0, 0.0);
+	bulletTraj->setShowEnabled(false);
+	world->addChild(bulletTraj);
 
 	// START SIMULATION
 	simulationFinished = false;
@@ -421,6 +437,22 @@ void updateHaptics(void)
 				tool->updateFromDevice();
 
 				updateWeaponPositionAndOrientation(hapticDevice, tool);
+
+				cVector3d toolP;
+				toolP = tool->getDeviceGlobalPos();
+				if (isPistolLoaded){
+					cVector3d targetPos = toolP + cVector3d(-3.0, 0.0, 0.1);
+					target->setLocalPos(targetPos);
+				}
+				else if (isRifleLoaded){
+					cVector3d targetPos = toolP + cVector3d(-6.0, 0.2, 0.5);
+					target->setLocalPos(targetPos);
+				}
+				else {
+					cVector3d targetPos = toolP + cVector3d(-10.0, 0.0, 0.0); 
+					target->setLocalPos(targetPos);
+				}
+				
 			}
 
 			if (is_pressed) {
@@ -437,6 +469,11 @@ void updateHaptics(void)
 			hapticDevice->getUserSwitch(3, button3);
 
 			if (sniperFiring) {
+				is_pressed = true;
+				button0 = true;
+			}
+
+			if (pistolFiring) {
 				is_pressed = true;
 				button0 = true;
 			}
@@ -611,85 +648,181 @@ void updateWeaponLabel() {
 
 //------------------------------------------------------------------------------
 
-void apply_pistol_force(void){
-	float mf = 1.1;	// mass of firearm
-	float vf = 3.978;	// velocity of firearm
-	float mb = 0.015;	// mass of bullet 
-	float barrel_length = 0.127;	// barrel length
-	float tr = 0.003;	// recoil time
+void apply_pistol_force(void) {
+	std::lock_guard<std::mutex> deviceLock(deviceMutex);
+	std::lock_guard<std::mutex> weaponLock(weaponMutex);
 
-	float force = 0.15 * (vf / tr);
+	float mf = 1.1;  // mass of firearm
+	float vf = 3.978;  // velocity of firearm
+	float mb = 0.015;  // mass of bullet 
+	float barrel_length = 0.127;  // barrel length
+	float tr = 0.003;  // recoil time
+	float force = 0.2 * (vf / tr);  // Increased force multiplier from 0.15 to 0.2
 
-	cVector3d direction(1 + ((rand() % 20) - 10) / 100.0, ((rand() % 20) - 10) / 100.0, 0.3 + ((rand() % 20) - 10) / 100.0);
+	cVector3d direction(1 + ((rand() % 20) - 10) / 100.0,
+		((rand() % 20) - 10) / 100.0,
+		0.3 + ((rand() % 20) - 10) / 100.0);
 	direction.normalize();
-
-	current_force = force*direction;
+	cVector3d initial_force = force * direction;
 
 	float h_axis = 0.0678;
-	current_torque = h_axis * current_force;
-	float moment_of_inertia = (h_axis*h_axis)*mf;
-	deviation_angle = (h_axis*mb*barrel_length) / moment_of_inertia;
+	cVector3d initial_torque = h_axis * initial_force;
+	float moment_of_inertia = (h_axis * h_axis) * mf;
+	float deviation_angle = (h_axis * mb * barrel_length) / moment_of_inertia;
 
-	if (elapsed_time < 30){
+	const int recoil_duration = 50;  // ms
+	const int recovery_duration = 100; // ms
+	const int total_duration = recoil_duration + recovery_duration;	
 
-		// apply the calculated force and torque
-		hapticDevice->setForceAndTorque(current_force, current_torque*deviation_angle);
+	if (elapsed_time < total_duration) {
+		pistolFiring = true;
+		cVector3d current_force;
+		cVector3d current_torque;
 
-		//// visually render the recoil
-		//cMatrix3d recoilRotation;
-		//recoilRotation.identity();
-		//recoilRotation.rotateAboutGlobalAxisDeg(1, 0, 0, 5 + (rand() % 5));
+		if (elapsed_time < recoil_duration) {
+			// Recoil phase
+			float recoil_progress = (float)elapsed_time / recoil_duration;
+			float decay_factor = exp(-5.0 * recoil_progress);  // Faster decay
+			current_force = initial_force * decay_factor;
+			current_torque = initial_torque * decay_factor * deviation_angle;
+		}
+		else {
+			// Recovery phase
+			float recovery_progress = (float)(elapsed_time - recoil_duration) / recovery_duration;
+			float recovery_factor = exp(-5.0 * recovery_progress) * 0.3;  // Faster recovery
+			current_force = -initial_force * recovery_factor;
+			current_torque = -initial_torque * recovery_factor * deviation_angle;
+		}
 
-		//weapon_pistol->setLocalRot(weapon_pistol->getLocalRot() * recoilRotation);
+		// Apply the calculated force and torque
+		hapticDevice->setForceAndTorque(current_force, current_torque);
 
+		cVector3d weaponPosi = tool->getDeviceGlobalPos();
+		weaponPosi.add(cVector3d(0.0, 0, 0.1));
+		bulletTraj->m_pointA = weaponPosi;
+		bulletTraj->m_pointB = target->getLocalPos();
+		bulletTraj->setShowEnabled(true);
+
+		// Visual feedback: upward and slight sideways rotation
+		float max_vertical_recoil_angle = 15.0; // Maximum vertical recoil angle in degrees
+		float max_horizontal_recoil_angle = 3.0; // Maximum horizontal recoil angle in degrees
+		float current_vertical_angle;
+		float current_horizontal_angle;
+
+		const int visual_recoil_duration = 30; // ms, faster visual recoil
+		const int visual_recovery_duration = 50; // ms, faster visual recovery
+		const int visual_total_duration = visual_recoil_duration + visual_recovery_duration;
+
+		if (elapsed_time < visual_recoil_duration) {
+			// Fast, linear upward and sideways rotation during recoil
+			float progress = (float)elapsed_time / visual_recoil_duration;
+			current_vertical_angle = max_vertical_recoil_angle * progress;
+			current_horizontal_angle = max_horizontal_recoil_angle * progress * (rand() % 2 == 0 ? 1 : -1); // Random left or right
+		}
+		else if (elapsed_time < visual_total_duration) {
+			// Fast, linear return to original position during recovery
+			float progress = (float)(elapsed_time - visual_recoil_duration) / visual_recovery_duration;
+			current_vertical_angle = max_vertical_recoil_angle * (1.0 - progress);
+			current_horizontal_angle = max_horizontal_recoil_angle * (1.0 - progress) * (rand() % 2 == 0 ? 1 : -1); // Random left or right
+		}
+		else {
+			// Hold at original position for the remainder of the haptic feedback
+			current_vertical_angle = 0;
+			current_horizontal_angle = 0;
+		}
+
+		cMatrix3d pistolRecoil;
+		pistolRecoil.identity();
+		pistolRecoil.rotateAboutLocalAxisDeg(cVector3d(1, 0, 0), -current_vertical_angle); // Vertical recoil
+		pistolRecoil.rotateAboutLocalAxisDeg(cVector3d(0, 1, 0), current_horizontal_angle); // Horizontal recoil
+
+		// Apply the rotation to the weapon's current orientation
+		cMatrix3d currentRot = weapon_pistol->getLocalRot();
+		weapon_pistol->setLocalRot(currentRot * pistolRecoil);
 	}
 	else {
+		pistolFiring = false;
 		hapticDevice->setForce(zero_vector);
+		// Reset weapon rotation
+		weapon_pistol->setLocalRot(weapon_pistol->getLocalRot());
+		bulletTraj->setShowEnabled(false);
 	}
 }
 
 //------------------------------------------------------------------------------
 
-void apply_rifle_force(void){
-	float mf = 3.9;	// mass of firearm
-	float vf = 2.2688;	// velocity of firearm
-	float mb = 0.0079;	// mass of bullet 
-	float barrel_length = 0.415;	// barrel length
-	float tr = 0.06;	// recoil time
-
+void apply_rifle_force(void) {
+	float mf = 3.9;  // mass of firearm
+	float vf = 2.2688;  // velocity of firearm
+	float mb = 0.0079;  // mass of bullet 
+	float barrel_length = 0.415;  // barrel length
+	float tr = 0.06;  // recoil time
 	float force = 0.15 * (vf / tr);
 
-	cVector3d direction(1 + ((rand() % 20) - 10) / 100.0, ((rand() % 20) - 10) / 100.0, 0.3 + ((rand() % 20) - 10) / 100.0);
-	// cVector3d direction(1, 0, 0);
+	cVector3d direction(1 + ((rand() % 20) - 10) / 100.0,
+		((rand() % 20) - 10) / 100.0,
+		0.3 + ((rand() % 20) - 10) / 100.0);
 	direction.normalize();
-
-	current_force = force*direction * 100;
+	cVector3d current_force = force * direction * 100;
 
 	float h_axis = 0.065;
-	current_torque = h_axis * current_force;
-	float moment_of_inertia = (h_axis*h_axis)*mf;
-	deviation_angle = (h_axis*mb*barrel_length) / moment_of_inertia;
+	cVector3d current_torque = h_axis * current_force;
+	float moment_of_inertia = (h_axis * h_axis) * mf;
+	float deviation_angle = (h_axis * mb * barrel_length) / moment_of_inertia;
 
-
-	if (elapsed_time < 60){
-
+	if (elapsed_time < 60) {
 		// apply the calculated force and torque
-		hapticDevice->setForceAndTorque(current_force, current_torque*deviation_angle);
+		hapticDevice->setForceAndTorque(current_force, current_torque * deviation_angle);
 
+		cVector3d weaponPosi = tool->getDeviceGlobalPos();
+		weaponPosi.add(cVector3d(0.0, 0, 0.5));
+		bulletTraj->m_pointA = weaponPosi;
+		bulletTraj->m_pointB = target->getLocalPos();
+		bulletTraj->setShowEnabled(true);
+
+		// Visual feedback
+		float max_vertical_recoil_angle = 5.0; // Maximum vertical recoil angle in degrees (smaller for continuous fire)
+		float max_horizontal_recoil_angle = 1.5; // Maximum horizontal recoil angle in degrees
+
+		// Calculate current recoil angles
+		float vertical_recoil = max_vertical_recoil_angle * (1.0 - (float)elapsed_time / 60.0);
+		float horizontal_recoil = max_horizontal_recoil_angle * sin((float)elapsed_time / 60.0 * M_PI) * (rand() % 2 == 0 ? 1 : -1);
+
+		cMatrix3d rifleRecoil;
+		rifleRecoil.identity();
+		rifleRecoil.rotateAboutLocalAxisDeg(cVector3d(0, 1, 0), -vertical_recoil); // Vertical recoil
+		rifleRecoil.rotateAboutLocalAxisDeg(cVector3d(1, 0, 0), horizontal_recoil); // Horizontal recoil
+
+		// Apply the rotation to the weapon's current orientation
+		cMatrix3d currentRot = weapon_rifle->getLocalRot();
+		weapon_rifle->setLocalRot(currentRot * rifleRecoil);
 	}
 	else if (elapsed_time < 120) {
 		hapticDevice->setForce(zero_vector);
+
+		// Visual recovery
+		float recovery_progress = (float)(elapsed_time - 60) / 60.0;
+		cMatrix3d rifleRecovery;
+		rifleRecovery.identity();
+		rifleRecovery.rotateAboutLocalAxisDeg(cVector3d(1, 0, 0), 3.0 * recovery_progress); // Vertical recovery
+
+		cMatrix3d currentRot = weapon_rifle->getLocalRot();
+		weapon_rifle->setLocalRot(currentRot * rifleRecovery);
 	}
-	else{
+	else {
 		time_start = currentTimeMillis();
 		elapsed_time = 0;
+		// Reset weapon rotation
+		weapon_rifle->setLocalRot(weapon_rifle->getLocalRot());
+		bulletTraj->setShowEnabled(false);
 	}
 }
 
 //------------------------------------------------------------------------------
 
 void apply_sniper_force(void) {
-	//std::lock_guard<std::mutex> deviceLock(deviceMutex);
+	std::lock_guard<std::mutex> deviceLock(deviceMutex);
+	std::lock_guard<std::mutex> weaponLock(weaponMutex);
 	float mf = 4.3;	// mass of firearm
 	float vf = 3.265;	// velocity of firearm
 	float mb = 0.0113;	// mass of bullet 
@@ -706,34 +839,26 @@ void apply_sniper_force(void) {
 	float moment_of_inertia = (h_axis*h_axis)*mf;
 	float deviation_angle = (h_axis*mb*barrel_length) / moment_of_inertia;
 
-	const int initial_spike_duration = 20;  // ms
-	const int recoil_duration = 100;  // ms
-	const int recovery_duration = 380;  // ms
-	const int total_duration = initial_spike_duration + recoil_duration + recovery_duration;
+	const int recoil_duration = 120;  // ms
+	const int recovery_duration = 300; // ms
+	const int total_duration = recoil_duration + recovery_duration;
 
 	if (elapsed_time < total_duration) {
 		sniperFiring = true;
-
 		cVector3d current_force;
 		cVector3d current_torque;
 
-		if (elapsed_time < initial_spike_duration) {
-			// Very high initial force
-			float spike_factor = 1.0 - (float)elapsed_time / initial_spike_duration;
-			current_force = initial_force * spike_factor;
-			current_torque = initial_torque * spike_factor * deviation_angle;
-		}
-		else if (elapsed_time < initial_spike_duration + recoil_duration) {
-			// Rapid decay after initial spike
-			float decay_time = elapsed_time - initial_spike_duration;
-			float decay_factor = exp(-10.0 * decay_time / recoil_duration);
-			current_force = initial_force * decay_factor * 0.2; // 0.2 to reduce force after initial spike
-			current_torque = initial_torque * decay_factor * deviation_angle * 0.2;
+		if (elapsed_time < recoil_duration) {
+			// Recoil phase
+			float recoil_progress = (float)elapsed_time / recoil_duration;
+			float decay_factor = exp(-3.0 * recoil_progress);
+			current_force = initial_force * decay_factor;
+			current_torque = initial_torque * decay_factor * deviation_angle;
 		}
 		else {
-			// Subtle recovery force in the opposite direction
-			float recovery_progress = (float)(elapsed_time - initial_spike_duration - recoil_duration) / recovery_duration;
-			float recovery_factor = exp(-3.0 * recovery_progress) * 0.05;  // 0.05 to make it more subtle
+			// Recovery phase
+			float recovery_progress = (float)(elapsed_time - recoil_duration) / recovery_duration;
+			float recovery_factor = exp(-3.0 * recovery_progress) * 0.2;
 			current_force = -initial_force * recovery_factor;
 			current_torque = -initial_torque * recovery_factor * deviation_angle;
 		}
@@ -741,21 +866,38 @@ void apply_sniper_force(void) {
 		// Apply the calculated force and torque
 		hapticDevice->setForceAndTorque(current_force, current_torque);
 
-		// Orientation Matrix :: Sniper
+		cVector3d weaponPosi = tool->getDeviceGlobalPos();
+		weaponPosi.add(cVector3d(0.0, 0, 0.0));
+		bulletTraj->m_pointA = weaponPosi;
+		bulletTraj->m_pointB = target->getLocalPos();
+		bulletTraj->setShowEnabled(true);
+
+		// Visual feedback: simple upward rotation
+		float max_recoil_angle = 25.0; // Maximum recoil angle in degrees
+		float current_angle;
+
+		if (elapsed_time < recoil_duration) {
+			// Smooth upward rotation during recoil
+			current_angle = max_recoil_angle * (float)elapsed_time / recoil_duration;
+		}
+		else {
+			// Smooth downward rotation during recovery
+			current_angle = max_recoil_angle * (1.0 - (float)(elapsed_time - recoil_duration) / recovery_duration);
+		}
+
 		cMatrix3d sniperRecoil;
 		sniperRecoil.identity();
+		sniperRecoil.rotateAboutLocalAxisDeg(cVector3d(0, 0, 1), -current_angle); // Rotate around x-axis
 
-		float recoil_progress = (float)elapsed_time / total_duration;
-		float recoil_angle_x = 90.0 * (1.0 - recoil_progress);
-		float recoil_angle_y = 20.0 * (1.0 - recoil_progress);
-
-		sniperRecoil.rotateAboutGlobalAxisDeg(1, 0, 0, 0); // lean right left (- right + left)
-		sniperRecoil.rotateAboutGlobalAxisDeg(0, 1, 0, recoil_angle_y); // + up - down 
-		sniperRecoil.rotateAboutGlobalAxisDeg(0, 0, 1, 0);
-		weapon_dragunov->setLocalRot(sniperRecoil);
+		// Apply the rotation to the weapon's current orientation
+		cMatrix3d currentRot = weapon_dragunov->getLocalRot();
+		weapon_dragunov->setLocalRot(currentRot * sniperRecoil);
 	}
 	else {
 		sniperFiring = false;
 		hapticDevice->setForce(zero_vector);
+		// Reset weapon rotation
+		weapon_dragunov->setLocalRot(weapon_dragunov->getLocalRot());
+		bulletTraj->setShowEnabled(false);
 	}
 }
