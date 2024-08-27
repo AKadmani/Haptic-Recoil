@@ -1,6 +1,7 @@
 #include "chai3d.h"
 #include <mutex>
 #include <chrono>
+#include <vector>
 
 using namespace chai3d;
 using namespace std;
@@ -41,6 +42,8 @@ bool isDragunovLoaded = false;
 bool isRifleLoaded = false;
 
 cLabel* weaponNameLabel;
+
+std::vector<cMesh*> blocks;
 
 string resourceRoot;
 
@@ -91,6 +94,7 @@ void apply_sniper_force();
 void apply_rifle_force();
 void createBlocks(cWorld* world);
 void updateWeaponPositionAndOrientation(cGenericHapticDevicePtr hapticDevice, cToolCursor* tool);
+bool checkCollision(const cVector3d& position);
 
 int main(int argc, char* argv[])
 {
@@ -402,18 +406,23 @@ void updateCameraPosition() {
 	cVector3d pos = camera->getLocalPos();
 	cVector3d dir = camera->getLookVector();
 	cVector3d right = camera->getRightVector();
+	cVector3d newPos = pos;
 
 	if (moveForward)
-		pos += dir * CAMERA_SPEED;
+		newPos += dir * CAMERA_SPEED;
 	if (moveBackward)
-		pos -= dir * CAMERA_SPEED;
+		newPos -= dir * CAMERA_SPEED;
 	if (moveLeft)
-		pos -= right * CAMERA_SPEED;
+		newPos -= right * CAMERA_SPEED;
 	if (moveRight)
-		pos += right * CAMERA_SPEED;
+		newPos += right * CAMERA_SPEED;
 
-	camera->setLocalPos(pos);
+	// Check for collision before updating position
+	if (!checkCollision(newPos)) {
+		camera->setLocalPos(newPos);
+	}
 }
+
 //------------------------------------------------------------------------------
 
 void updateHaptics(void)
@@ -497,6 +506,7 @@ void updateHaptics(void)
 
 			if (!(is_pressed && button0)) {
 				hapticDevice->setForce(zero_vector);
+				bulletTraj->setShowEnabled(false);
 			}
 
 			if (is_pressed && !button0) {
@@ -587,9 +597,27 @@ void createBlocks(cWorld* world) {
 			cMaterial material;
 			material.setGrayLevel(0.5);
 			block->setMaterial(material);
+
+			blocks.push_back(block);
 		}
 	}
 }
+
+bool checkCollision(const cVector3d& position) {
+	for (const auto& block : blocks) {
+		cVector3d blockPos = block->getLocalPos();
+		cVector3d blockSize(0.5, 0.5, 0.5);  // Assuming blocks are 0.5 units in each dimension
+
+		// Check if position is within the block's bounds
+		if (position.x() >= blockPos.x() - blockSize.x() / 2 && position.x() <= blockPos.x() + blockSize.x() / 2 &&
+			position.y() >= blockPos.y() - blockSize.y() / 2 && position.y() <= blockPos.y() + blockSize.y() / 2 &&
+			position.z() >= blockPos.z() - blockSize.z() / 2 && position.z() <= blockPos.z() + blockSize.z() / 2) {
+			return true;  // Collision detected
+		}
+	}
+	return false;  // No collision
+}
+
 
 //------------------------------------------------------------------------------
 
