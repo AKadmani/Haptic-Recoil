@@ -17,6 +17,11 @@ cStereoMode stereoMode = C_STEREO_DISABLED;
 bool fullscreen = false;
 bool mirroredDisplay = false;
 
+//------------------------------------------------------------------------------
+// DECLARED MACROS
+//------------------------------------------------------------------------------
+#define RESOURCE_PATH(p)    (char*)((resourceRoot+string(p)).c_str())
+
 // DECLARED VARIABLES
 cWorld* world;
 cCamera* camera;
@@ -66,15 +71,222 @@ std::mutex weaponMutex;
 
 volatile bool graphicsUpdateFlag = false;
 
+cVector3d currentToolP;
+cVector3d lastToolP;
+
 const double CAMERA_SPEED = 0.1;
 bool moveForward = false, moveBackward = false, moveLeft = false, moveRight = false;
 
 cShapeLine* bulletTraj;
-cShapeSphere* target;
-//------------------------------------------------------------------------------
-// DECLARED MACROS
-//------------------------------------------------------------------------------
-#define RESOURCE_PATH(p)    (char*)((resourceRoot+string(p)).c_str())
+
+class CrosshairTarget {
+private:
+	std::vector<cMesh*> crosshairParts;
+	cWorld* world;
+	cVector3d position;
+	const double MOVEMENT_THRESHOLD = 0.001; // Adjust this value as needed
+	const double SMOOTHING_FACTOR = 0.1; // Adjust for more or less smoothing
+	std::vector<cVector3d> initialOffsets;
+
+public:
+	CrosshairTarget(cWorld* w) : world(w), position(0, 0, 0) {
+		createCrosshair();
+		storeInitialOffsets();
+	}
+
+	void createCrosshair() {
+		cMaterial material;
+		material.setRed();
+
+		// Center block
+		cMesh* center = new cMesh();
+		world->addChild(center);
+		cCreateBox(center, 0.02, 0.02, 0.02);
+		center->setMaterial(material);
+		crosshairParts.push_back(center);
+
+		// Top block
+		cMesh* top = new cMesh();
+		world->addChild(top);
+		cCreateBox(top, 0.01, 0.01, 0.05);
+		top->setLocalPos(0.0, 0.0, 0.04);
+		top->setMaterial(material);
+		crosshairParts.push_back(top);
+
+		// Bottom block
+		cMesh* bottom = new cMesh();
+		world->addChild(bottom);
+		cCreateBox(bottom, 0.01, 0.01, 0.05);
+		bottom->setLocalPos(0.0, 0.0, -0.04);
+		bottom->setMaterial(material);
+		crosshairParts.push_back(bottom);
+
+		// Left block
+		cMesh* left = new cMesh();
+		world->addChild(left);
+		cCreateBox(left, 0.01, 0.05, 0.01);
+		left->setLocalPos(0.0, -0.04, 0.0);
+		left->setMaterial(material);
+		crosshairParts.push_back(left);
+
+		// Right block
+		cMesh* right = new cMesh();
+		world->addChild(right);
+		cCreateBox(right, 0.01, 0.05, 0.01);
+		right->setLocalPos(0.0, 0.04, 0.0);
+		right->setMaterial(material);
+		crosshairParts.push_back(right);
+	}
+
+	void storeInitialOffsets() {
+		initialOffsets.clear();
+		for (const auto& part : crosshairParts) {
+			initialOffsets.push_back(part->getLocalPos());
+		}
+	}
+
+	void updatePosition(const cVector3d& targetPosition) {
+		cVector3d diff = targetPosition - position;
+		if (diff.length() > MOVEMENT_THRESHOLD) {
+			cVector3d newPosition = position + diff * SMOOTHING_FACTOR;
+			setPosition(newPosition);
+		}
+	}
+
+	void setPosition(const cVector3d& newPosition) {
+		position = newPosition;
+		for (size_t i = 0; i < crosshairParts.size(); ++i) {
+			crosshairParts[i]->setLocalPos(position + initialOffsets[i]);
+		}
+	}
+
+	cVector3d getPosition() const {
+		return crosshairParts[0]->getGlobalPos();
+	}
+};
+
+CrosshairTarget* crosshair;
+
+class DynamicTarget {
+private:
+	cMultiMesh* targetMesh;
+	cWorld* world;
+	double moveInterval;
+	double lastMoveTime;
+
+public:
+	DynamicTarget(cWorld* w) : world(w), moveInterval(3.0), lastMoveTime(0.0) {
+		createTargetShape();
+		moveTarget(); // Initial position
+	}
+
+	void createTargetShape() {
+		targetMesh = new cMultiMesh();
+		world->addChild(targetMesh);
+
+		// Load a simple humanoid model (you'll need to provide the correct path)
+		bool fileload;
+		fileload = targetMesh->loadFromFile(RESOURCE_PATH("../resources/FinalBaseMesh.obj"));
+		if (!fileload) {
+#if defined(_MSVC)
+			fileload = targetMesh->loadFromFile("../../../bin/resources/FinalBaseMesh.obj");
+#endif
+		}
+		if (!fileload){
+			cout << "Error - Target model failed to load correctly." << endl;
+			delete targetMesh;
+			targetMesh = nullptr;
+			return;
+		}
+
+		// Scale and set material properties
+		targetMesh->scale(0.05);  // Adjust scale as needed
+		cMatrix3d rotMat;
+		rotMat.identity();
+		rotMat.rotateAboutGlobalAxisDeg(1, 0, 0, 90);
+		rotMat.rotateAboutGlobalAxisDeg(0, 0, 1, 90);
+		targetMesh->setLocalRot(rotMat);
+		cMaterial material;
+		material.setRedCrimson();
+		targetMesh->setMaterial(material);
+
+		// Create a bounding box for the entire mesh
+		targetMesh->computeBoundaryBox(true);
+
+		targetMesh->setShowBoundaryBox(true);
+	}
+
+	void update(double currentTime) {
+		if (currentTime - lastMoveTime > moveInterval) {
+			moveTarget();
+			lastMoveTime = currentTime;
+		}
+	}
+
+	void moveTarget() {
+		// Generate random position within the specified bounds
+		double x = -7.0 + (rand() % 400) / 100.0; // Range: -7 to -3
+		double y = 3.0 + (rand() % 500) / 100.0;  // Range: 3 to 8
+		double z = -0.5 + (rand() % 100) / 100.0; // Range: -0.5 to 0.5
+
+		targetMesh->setLocalPos(x, y, z);
+	}
+
+	cVector3d getPosition() const {
+		return targetMesh->getLocalPos();
+	}
+
+	bool checkHit(const cVector3d& weaponPosition, const cVector3d& crosshairPosition) {
+		// Calculate ray direction
+		cVector3d rayDirection = crosshairPosition - weaponPosition;
+		rayDirection.normalize();
+
+		// Get target's bounding box
+		cVector3d minBound, maxBound;
+		minBound = targetMesh->getBoundaryMin();
+		maxBound = targetMesh->getBoundaryMax();
+
+		// Transform bounding box to world coordinates
+		cTransform worldTransform = targetMesh->getGlobalTransform();
+		minBound = worldTransform * minBound;
+		maxBound = worldTransform * maxBound;
+
+		// Check if the ray passes through the AABB
+		double t1 = (minBound.x() - weaponPosition.x()) / rayDirection.x();
+		double t2 = (maxBound.x() - weaponPosition.x()) / rayDirection.x();
+		double t3 = (minBound.y() - weaponPosition.y()) / rayDirection.y();
+		double t4 = (maxBound.y() - weaponPosition.y()) / rayDirection.y();
+		double t5 = (minBound.z() - weaponPosition.z()) / rayDirection.z();
+		double t6 = (maxBound.z() - weaponPosition.z()) / rayDirection.z();
+
+		double tmin = std::max(std::max(std::min(t1, t2), std::min(t3, t4)), std::min(t5, t6));
+		double tmax = std::min(std::min(std::max(t1, t2), std::max(t3, t4)), std::max(t5, t6));
+
+		// Ray intersection occurs when tmax > tmin and tmax > 0
+		return tmax > std::max(0.0, tmin);
+	}
+};
+
+DynamicTarget* dynamicTarget = nullptr;
+
+bool timeTrialActive = false;
+int timeTrialDuration = 30; // 30 seconds
+int score = 0;
+std::chrono::steady_clock::time_point timeTrialStart;
+
+void updateTimeTrial() {
+	if (timeTrialActive) {
+		auto currentTime = std::chrono::steady_clock::now();
+		int elapsedSeconds = std::chrono::duration_cast<std::chrono::seconds>(currentTime - timeTrialStart).count();
+		if (elapsedSeconds >= timeTrialDuration) {
+			timeTrialActive = false;
+			cout << "Time's up! Final score: " << score << endl;
+			score = 0;  // Reset score for the next trial
+		}
+	}
+}
+
+cLabel* scoreTimeLabel;
 
 // DECLARED FUNCTIONS
 void resizeWindow(int w, int h);
@@ -177,11 +389,17 @@ int main(int argc, char* argv[])
 	// WIDGETS
 	cFont *font = NEW_CFONTCALIBRI32();
 	labelHapticRate = new cLabel(font);
-	labelHapticRate->m_fontColor.setWhiteAntique();
+	labelHapticRate->m_fontColor.setBlueRoyal();
 	camera->m_frontLayer->addChild(labelHapticRate);
 	labelHapticRate->setLocalPos(windowW - 100, 10);
 
+	scoreTimeLabel = new cLabel(font);
+	scoreTimeLabel->m_fontColor.setBlack();
+	camera->m_frontLayer->addChild(scoreTimeLabel);
+	scoreTimeLabel->setLocalPos(10, windowH - 30);
+
 	createBlocks(world);
+	dynamicTarget = new DynamicTarget(world);
 
 	weaponNameLabel = new cLabel(font);
 	weaponNameLabel->m_fontColor.setGreenDarkOlive();
@@ -189,10 +407,7 @@ int main(int argc, char* argv[])
 	camera->m_frontLayer->addChild(weaponNameLabel);
 	weaponNameLabel->setLocalPos(10, 10);
 
-	target = new cShapeSphere(0.04);
-	target->setLocalPos(0.0, 0.0, 0.2);
-	target->m_material->setRed();
-	world->addChild(target);
+	crosshair = new CrosshairTarget(world);
 
 	// CREATE WEAPONS
 	weapon_pistol = new cMultiMesh();
@@ -249,7 +464,7 @@ int main(int argc, char* argv[])
 	applyTextureToWeapon(weapon_pistol, "../resources/textures/pistol.png");
 	applyTextureToWeapon(weapon_dragunov, "../resources/textures/Texture.png");
 	applyTextureToWeapon(weapon_rifle, "../resources/textures/ak47.jpg");
-	
+
 	tool->m_image = weapon_pistol;
 
 	weapon_pistol->setUseCulling(false);
@@ -278,9 +493,9 @@ int main(int argc, char* argv[])
 	weapon_dragunov->setMaterial(mat);
 	weapon_rifle->setMaterial(mat);
 
-	bulletTraj = new cShapeLine(tool->getLocalPos(), target->getLocalPos());
+	bulletTraj = new cShapeLine(tool->getLocalPos(), crosshair->getPosition());
 	bulletTraj->setLineWidth(2.0);
-	bulletTraj->m_colorPointA.set(0.0, 0.0, 0.0);
+	bulletTraj->m_colorPointA.set(0.5, 0.0, 0.0);
 	bulletTraj->m_colorPointB.set(1.0, 0.0, 0.0);
 	bulletTraj->setShowEnabled(false);
 	world->addChild(bulletTraj);
@@ -327,6 +542,14 @@ void keySelect(unsigned char key, int x, int y) {
 		break;
 	case 'd':
 		moveRight = true;
+		break;
+	case 't':
+		if (!timeTrialActive) {
+			timeTrialActive = true;
+			timeTrialStart = std::chrono::steady_clock::now();
+			score = 0;
+			cout << "Time trial started!" << endl;
+		}
 		break;
 	}
 }
@@ -381,6 +604,16 @@ void updateGraphics(void)
 	}
 
 	updateCameraPosition();
+
+	if (timeTrialActive) {
+		auto currentTime = std::chrono::steady_clock::now();
+		int elapsedSeconds = std::chrono::duration_cast<std::chrono::seconds>(currentTime - timeTrialStart).count();
+		int remainingTime = timeTrialDuration - elapsedSeconds;
+		scoreTimeLabel->setText("Score: " + cStr(score) + " | Time: " + cStr(remainingTime) + "s");
+	}
+	else {
+		scoreTimeLabel->setText("Press 'T' to start time trial");
+	}
 
 	labelHapticRate->setText(cStr(frequencyCounter.getFrequency(), 0) + " Hz");
 
@@ -441,27 +674,46 @@ void updateHaptics(void)
 			{
 				std::lock_guard<std::mutex> deviceLock(deviceMutex);
 				std::lock_guard<std::mutex> weaponLock(weaponMutex);
-				
+
 				world->computeGlobalPositions(true);
 				tool->updateFromDevice();
 
 				updateWeaponPositionAndOrientation(hapticDevice, tool);
 
 				cVector3d toolP;
-				toolP = tool->getDeviceGlobalPos();
+				currentToolP = tool->getDeviceGlobalPos();
+				cVector3d toolMovement = currentToolP - lastToolP;
+				cVector3d toolMovementDirection;
+				toolMovement.normalizer(toolMovementDirection);
+
+				if (toolMovement.y() > 0){
+					currentToolP.add(cVector3d(0, toolMovement.y()*toolMovementDirection.y(), 0));
+				}
+
 				if (isPistolLoaded){
-					cVector3d targetPos = toolP + cVector3d(-3.0, 0.0, 0.1);
-					target->setLocalPos(targetPos);
+					cVector3d targetPos = currentToolP + cVector3d(-3.0, 0, 0.1);
+					crosshair->setPosition(targetPos);
 				}
 				else if (isRifleLoaded){
-					cVector3d targetPos = toolP + cVector3d(-6.0, 0.2, 0.5);
-					target->setLocalPos(targetPos);
+					cVector3d targetPos = currentToolP + cVector3d(-3.0, 0, 0.5);
+					crosshair->setPosition(targetPos);
 				}
 				else {
-					cVector3d targetPos = toolP + cVector3d(-10.0, 0.0, 0.0); 
-					target->setLocalPos(targetPos);
+					cVector3d targetPos = currentToolP + cVector3d(-3.0, 0, 0.0);
+					crosshair->setPosition(targetPos);
 				}
-				
+
+				// Update dynamic target
+				if (dynamicTarget != nullptr)
+				{
+					// Get current time in seconds
+					double currentTime = std::chrono::duration_cast<std::chrono::duration<double>>(
+						std::chrono::high_resolution_clock::now().time_since_epoch()
+						).count();
+
+					dynamicTarget->update(currentTime);
+				}
+
 			}
 
 			if (is_pressed) {
@@ -502,6 +754,20 @@ void updateHaptics(void)
 				else if (isDragunovLoaded) {
 					apply_sniper_force();
 				}
+				if (timeTrialActive) {
+					cVector3d weaponPosition = tool->getDeviceGlobalPos();
+					cVector3d crosshairPosition = crosshair->getPosition();
+
+					if (dynamicTarget->checkHit(weaponPosition, crosshairPosition)) {
+						std::cout << "Hit detected!" << std::endl;
+						score++;
+						cout << "Hit! Current score: " << score << endl;
+						dynamicTarget->moveTarget(); // Move the target to a new position
+					}
+					else {
+						std::cout << "No hit detected." << std::endl;
+					}
+				}
 			}
 
 			if (!(is_pressed && button0)) {
@@ -536,11 +802,14 @@ void updateHaptics(void)
 				updateWeaponLabel();
 			}
 
+			updateTimeTrial();
+
 			{
 				std::lock_guard<std::mutex> deviceLock(deviceMutex);
 				std::lock_guard<std::mutex> weaponLock(weaponMutex);
 
 				tool->computeInteractionForces();
+				lastToolP = currentToolP;
 			}
 
 			graphicsUpdateFlag = true;
@@ -700,8 +969,8 @@ void apply_pistol_force(void) {
 
 	const int recoil_duration = 50;  // ms
 	const int recovery_duration = 100; // ms
-	const int total_duration = recoil_duration + recovery_duration;	
-
+	const int total_duration = recoil_duration + recovery_duration;
+	
 	if (elapsed_time < total_duration) {
 		pistolFiring = true;
 		cVector3d current_force;
@@ -728,7 +997,7 @@ void apply_pistol_force(void) {
 		cVector3d weaponPosi = tool->getDeviceGlobalPos();
 		weaponPosi.add(cVector3d(0.0, 0, 0.1));
 		bulletTraj->m_pointA = weaponPosi;
-		bulletTraj->m_pointB = target->getLocalPos();
+		bulletTraj->m_pointB = crosshair->getPosition();
 		bulletTraj->setShowEnabled(true);
 
 		// Visual feedback: upward and slight sideways rotation
@@ -805,7 +1074,7 @@ void apply_rifle_force(void) {
 		cVector3d weaponPosi = tool->getDeviceGlobalPos();
 		weaponPosi.add(cVector3d(0.0, 0, 0.5));
 		bulletTraj->m_pointA = weaponPosi;
-		bulletTraj->m_pointB = target->getLocalPos();
+		bulletTraj->m_pointB = crosshair->getPosition();
 		bulletTraj->setShowEnabled(true);
 
 		// Visual feedback
@@ -897,7 +1166,7 @@ void apply_sniper_force(void) {
 		cVector3d weaponPosi = tool->getDeviceGlobalPos();
 		weaponPosi.add(cVector3d(0.0, 0, 0.0));
 		bulletTraj->m_pointA = weaponPosi;
-		bulletTraj->m_pointB = target->getLocalPos();
+		bulletTraj->m_pointB = crosshair->getPosition();
 		bulletTraj->setShowEnabled(true);
 
 		// Visual feedback: simple upward rotation
