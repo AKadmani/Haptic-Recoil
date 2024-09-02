@@ -25,14 +25,64 @@ bool mirroredDisplay = false;
 // DECLARED VARIABLES
 cWorld* world;
 cCamera* camera;
-cDirectionalLight *light;
 cHapticDeviceHandler* handler;
 cToolCursor* tool;
 cGenericHapticDevicePtr hapticDevice;
-cLabel* labelHapticRate;
 bool simulationRunning = false;
 bool simulationFinished = true;
 cFrequencyCounter frequencyCounter;
+
+cDirectionalLight* directionalLight;
+cPositionalLight* pointLight;
+cSpotLight* spotLight;
+
+void setupLights(cWorld* world) {
+	// Directional light (already exists in your code)
+	directionalLight = new cDirectionalLight(world);
+	world->addChild(directionalLight);
+	directionalLight->setEnabled(true);
+	directionalLight->setDir(-1.0, -1.0, -1.0);
+	directionalLight->m_ambient.set(0.3f, 0.3f, 0.3f);
+	directionalLight->m_diffuse.set(0.7f, 0.7f, 0.7f);
+	directionalLight->m_specular.set(1.0f, 1.0f, 1.0f);
+
+	// Point light
+	pointLight = new cPositionalLight(world);
+	world->addChild(pointLight);
+	pointLight->setEnabled(true);
+	pointLight->setLocalPos(0.0, 2.0, 2.0);
+	pointLight->m_ambient.set(0.2f, 0.2f, 0.2f);
+	pointLight->m_diffuse.set(0.8f, 0.8f, 0.8f);
+	pointLight->m_specular.set(1.0f, 1.0f, 1.0f);
+	pointLight->setAttConstant(1.0f);
+	pointLight->setAttLinear(0.1f);
+	pointLight->setAttQuadratic(0.01f);
+
+	// Spot light
+	spotLight = new cSpotLight(world);
+	world->addChild(spotLight);
+	spotLight->setEnabled(true);
+	spotLight->setLocalPos(-2.0, 0.0, 3.0);
+	spotLight->setDir(0.0, 0.0, -1.0);
+	spotLight->m_ambient.set(0.2f, 0.2f, 0.2f);
+	spotLight->m_diffuse.set(0.8f, 0.8f, 0.8f);
+	spotLight->m_specular.set(1.0f, 1.0f, 1.0f);
+	spotLight->setCutOffAngleDeg(30);
+	spotLight->setSpotExponent(10);
+	spotLight->setAttConstant(1.0f);
+	spotLight->setAttLinear(0.1f);
+	spotLight->setAttQuadratic(0.01f);
+}
+
+void updateLights(double time) {
+	// Move the point light in a circular pattern
+	pointLight->setLocalPos(2.0 * cos(time), 2.0 * sin(time), 2.0);
+
+	// Change the color of the spot light over time
+	float r = (sin(time) + 1.0f) / 2.0f;
+	float g = (cos(time) + 1.0f) / 2.0f;
+	spotLight->m_diffuse.set(r, g, 0.5f);
+}
 
 int screenW, screenH, windowW, windowH, windowPosX, windowPosY;
 
@@ -173,9 +223,10 @@ private:
 	cWorld* world;
 	double moveInterval;
 	double lastMoveTime;
+	double initialY;
 
 public:
-	DynamicTarget(cWorld* w) : world(w), moveInterval(3.0), lastMoveTime(0.0) {
+	DynamicTarget(cWorld* w, double startY) : world(w), moveInterval(3.0), lastMoveTime(0.0), initialY(startY) {
 		createTargetShape();
 		moveTarget(); // Initial position
 	}
@@ -184,7 +235,6 @@ public:
 		targetMesh = new cMultiMesh();
 		world->addChild(targetMesh);
 
-		// Load a simple humanoid model (you'll need to provide the correct path)
 		bool fileload;
 		fileload = targetMesh->loadFromFile(RESOURCE_PATH("../resources/FinalBaseMesh.obj"));
 		if (!fileload) {
@@ -207,7 +257,7 @@ public:
 		rotMat.rotateAboutGlobalAxisDeg(0, 0, 1, 90);
 		targetMesh->setLocalRot(rotMat);
 		cMaterial material;
-		material.setRedCrimson();
+		material.setPurpleDarkMagenta();
 		targetMesh->setMaterial(material);
 
 		// Create a bounding box for the entire mesh
@@ -217,7 +267,7 @@ public:
 	}
 
 	void update(double currentTime) {
-		if (currentTime - lastMoveTime > moveInterval) {
+		if (currentTime - lastMoveTime >= moveInterval) {
 			moveTarget();
 			lastMoveTime = currentTime;
 		}
@@ -225,12 +275,12 @@ public:
 
 	void moveTarget() {
 		// Generate random position within the specified bounds
-		double x = -7.0 + (rand() % 400) / 100.0; // Range: -7 to -3
-		double y = 3.0 + (rand() % 500) / 100.0;  // Range: 3 to 8
+		double x = -4; // Fixed X position
+		double y = initialY + ((rand() % 1001 - 500) / 100.0);  // Range: initialY - 5 to initialY + 5
 		double z = -0.5 + (rand() % 100) / 100.0; // Range: -0.5 to 0.5
-
 		targetMesh->setLocalPos(x, y, z);
 	}
+
 
 	cVector3d getPosition() const {
 		return targetMesh->getLocalPos();
@@ -265,9 +315,17 @@ public:
 		// Ray intersection occurs when tmax > tmin and tmax > 0
 		return tmax > std::max(0.0, tmin);
 	}
+
+	void moveOnHit(double currentTime) {
+		moveTarget();
+		lastMoveTime = currentTime;
+	}
 };
 
-DynamicTarget* dynamicTarget = nullptr;
+DynamicTarget* dynamicTarget1 = nullptr;
+//DynamicTarget* dynamicTarget2 = nullptr;
+//DynamicTarget* dynamicTarget3 = nullptr;
+
 
 bool timeTrialActive = false;
 int timeTrialDuration = 30; // 30 seconds
@@ -287,6 +345,43 @@ void updateTimeTrial() {
 }
 
 cLabel* scoreTimeLabel;
+
+void updateBlockTransparency(cWorld* world, cToolCursor* tool)
+{
+	const double MIN_DISTANCE = 0.5; // Minimum distance before transparency starts
+	const double MAX_DISTANCE = 1.5; // Distance at which block becomes fully opaque
+	const double MIN_ALPHA = 0.1; // Minimum alpha (maximum transparency)
+
+	cVector3d toolPos = tool->getDeviceGlobalPos();
+
+	for (int i = 0; i < world->getNumChildren(); i++)
+	{
+		cGenericObject* obj = world->getChild(i);
+		cMesh* block = dynamic_cast<cMesh*>(obj);
+
+		if (block && block != tool->m_image) // Check if it's a block and not the weapon
+		{
+			cVector3d blockPos = block->getGlobalPos();
+			double distance = cDistance(blockPos, toolPos);
+
+			if (distance < MIN_DISTANCE)
+			{
+				block->setTransparencyLevel(MIN_ALPHA);
+			}
+			else if (distance < MAX_DISTANCE)
+			{
+				double alpha = MIN_ALPHA + (1.0 - MIN_ALPHA) * ((distance - MIN_DISTANCE) / (MAX_DISTANCE - MIN_DISTANCE));
+				block->setTransparencyLevel(alpha);
+			}
+			else
+			{
+				block->setTransparencyLevel(1.0); // Fully opaque
+			}
+
+			block->setUseTransparency(true);
+		}
+	}
+}
 
 // DECLARED FUNCTIONS
 void resizeWindow(int w, int h);
@@ -310,6 +405,8 @@ bool checkCollision(const cVector3d& position);
 
 int main(int argc, char* argv[])
 {
+	srand(static_cast<unsigned int>(time(nullptr)));
+
 	cout << endl;
 	cout << "-----------------------------------" << endl;
 	cout << "CHAI3D" << endl;
@@ -323,6 +420,7 @@ int main(int argc, char* argv[])
 	glutInit(&argc, argv);
 	screenW = glutGet(GLUT_SCREEN_WIDTH);
 	screenH = glutGet(GLUT_SCREEN_HEIGHT);
+	cout << screenW << endl;
 	windowW = (int)(0.8 * screenH);
 	windowH = (int)(0.5 * screenH);
 	windowPosY = (screenH - windowH) / 2;
@@ -357,13 +455,7 @@ int main(int argc, char* argv[])
 		cVector3d(0.0, 0.0, 1.0));   // direction of the (up) vector
 	camera->setClippingPlanes(0.01, 100);
 
-	light = new cDirectionalLight(world);
-	world->addChild(light);
-	light->setEnabled(true);
-	light->setDir(-1.0, -1.0, -1.0);
-	light->m_ambient.set(0.4f, 0.4f, 0.4f);
-	light->m_diffuse.set(0.8f, 0.8f, 0.8f);
-	light->m_specular.set(1.0f, 1.0f, 1.0f);
+	setupLights(world);
 
 	// HAPTIC DEVICES / TOOLS
 	handler = new cHapticDeviceHandler();
@@ -388,18 +480,39 @@ int main(int argc, char* argv[])
 
 	// WIDGETS
 	cFont *font = NEW_CFONTCALIBRI32();
-	labelHapticRate = new cLabel(font);
-	labelHapticRate->m_fontColor.setBlueRoyal();
-	camera->m_frontLayer->addChild(labelHapticRate);
-	labelHapticRate->setLocalPos(windowW - 100, 10);
 
 	scoreTimeLabel = new cLabel(font);
-	scoreTimeLabel->m_fontColor.setBlack();
+	scoreTimeLabel->m_fontColor.setBlueRoyal();
 	camera->m_frontLayer->addChild(scoreTimeLabel);
-	scoreTimeLabel->setLocalPos(10, windowH - 30);
+	scoreTimeLabel->setLocalPos(10, windowH + 250);
+
+	// Declare the background pointer
+	cBackground* background = new cBackground();
+
+	// Attempt to load the background image
+	bool fload = background->loadFromFile(RESOURCE_PATH("../resources/b1.jpg"));
+	if (!fload) {
+#if defined(_MSVC)
+		fload = background->loadFromFile("../../../bin/resources/b1.jpg");
+#endif
+	}
+
+	// Check if the background loaded successfully
+	if (!fload) {
+		cout << "Error - Background image failed to load correctly." << endl;
+		delete background;
+		background = nullptr;
+	}
+	else {
+		// If the background loaded successfully, add it to the camera
+		camera->m_backLayer->addChild(background);
+	}
 
 	createBlocks(world);
-	dynamicTarget = new DynamicTarget(world);
+	// Create the targets with different initial Y positions
+	dynamicTarget1 = new DynamicTarget(world, 0.0);  // Starts at Y = 3.0
+	//dynamicTarget2 = new DynamicTarget(world, 5.0);  // Starts at Y = 5.0
+	//dynamicTarget3 = new DynamicTarget(world, 7.0);  // Starts at Y = 7.0
 
 	weaponNameLabel = new cLabel(font);
 	weaponNameLabel->m_fontColor.setGreenDarkOlive();
@@ -489,10 +602,12 @@ int main(int argc, char* argv[])
 
 	// set materials for the weapons
 	cMaterial mat;
+	mat.m_specular.set(0.9f, 0.9f, 0.9f, 1.0f);  // Using cColorf to set specular color
+	mat.setShininess(100);  // This method exists and sets the shininess
+
 	weapon_pistol->setMaterial(mat);
 	weapon_dragunov->setMaterial(mat);
 	weapon_rifle->setMaterial(mat);
-
 	bulletTraj = new cShapeLine(tool->getLocalPos(), crosshair->getPosition());
 	bulletTraj->setLineWidth(2.0);
 	bulletTraj->m_colorPointA.set(0.5, 0.0, 0.0);
@@ -615,8 +730,6 @@ void updateGraphics(void)
 		scoreTimeLabel->setText("Press 'T' to start time trial");
 	}
 
-	labelHapticRate->setText(cStr(frequencyCounter.getFrequency(), 0) + " Hz");
-
 	// update shadow maps (if any)
 	world->updateShadowMaps(false, mirroredDisplay);
 
@@ -640,6 +753,7 @@ void updateCameraPosition() {
 	cVector3d dir = camera->getLookVector();
 	cVector3d right = camera->getRightVector();
 	cVector3d newPos = pos;
+	cVector3d weaponPos = tool->getLocalPos();
 
 	if (moveForward)
 		newPos += dir * CAMERA_SPEED;
@@ -654,6 +768,8 @@ void updateCameraPosition() {
 	if (!checkCollision(newPos)) {
 		camera->setLocalPos(newPos);
 	}
+
+	updateBlockTransparency(world, tool);
 }
 
 //------------------------------------------------------------------------------
@@ -675,6 +791,11 @@ void updateHaptics(void)
 				std::lock_guard<std::mutex> deviceLock(deviceMutex);
 				std::lock_guard<std::mutex> weaponLock(weaponMutex);
 
+				// Get current time in seconds
+				double currentTime = std::chrono::duration_cast<std::chrono::duration<double>>(
+					std::chrono::high_resolution_clock::now().time_since_epoch()
+					).count();
+
 				world->computeGlobalPositions(true);
 				tool->updateFromDevice();
 
@@ -691,29 +812,24 @@ void updateHaptics(void)
 				}
 
 				if (isPistolLoaded){
-					cVector3d targetPos = currentToolP + cVector3d(-3.0, 0, 0.1);
+					cVector3d targetPos = currentToolP + cVector3d(-2.0, 0, 0.1);
 					crosshair->setPosition(targetPos);
 				}
 				else if (isRifleLoaded){
-					cVector3d targetPos = currentToolP + cVector3d(-3.0, 0, 0.5);
+					cVector3d targetPos = currentToolP + cVector3d(-2.0, 0, 0.5);
 					crosshair->setPosition(targetPos);
 				}
 				else {
-					cVector3d targetPos = currentToolP + cVector3d(-3.0, 0, 0.0);
+					cVector3d targetPos = currentToolP + cVector3d(-2.0, 0, 0.0);
 					crosshair->setPosition(targetPos);
 				}
 
-				// Update dynamic target
-				if (dynamicTarget != nullptr)
-				{
-					// Get current time in seconds
-					double currentTime = std::chrono::duration_cast<std::chrono::duration<double>>(
-						std::chrono::high_resolution_clock::now().time_since_epoch()
-						).count();
+				dynamicTarget1->update(currentTime);
+				//dynamicTarget2->update(currentTime);
+				//dynamicTarget3->update(currentTime);
 
-					dynamicTarget->update(currentTime);
-				}
-
+				updateLights(currentTime);
+				updateBlockTransparency(world, tool);
 			}
 
 			if (is_pressed) {
@@ -744,6 +860,14 @@ void updateHaptics(void)
 				time_start = currentTimeMillis();
 			}
 
+			cVector3d weaponPosition = tool->getDeviceGlobalPos();
+			cVector3d crosshairPosition = crosshair->getPosition();
+
+			// Get current time
+			double currentTime = std::chrono::duration_cast<std::chrono::duration<double>>(
+				std::chrono::high_resolution_clock::now().time_since_epoch()
+				).count();
+
 			if (is_pressed && button0) {
 				if (isPistolLoaded) {
 					apply_pistol_force();
@@ -754,20 +878,33 @@ void updateHaptics(void)
 				else if (isDragunovLoaded) {
 					apply_sniper_force();
 				}
-				if (timeTrialActive) {
-					cVector3d weaponPosition = tool->getDeviceGlobalPos();
-					cVector3d crosshairPosition = crosshair->getPosition();
+				if (dynamicTarget1->checkHit(weaponPosition, crosshairPosition)) {
+					// Handle hit on target 1
+					dynamicTarget1->moveOnHit(currentTime);
+					std::cout << "Hit!" << std::endl;
 
-					if (dynamicTarget->checkHit(weaponPosition, crosshairPosition)) {
-						std::cout << "Hit detected!" << std::endl;
+					if (timeTrialActive) {
 						score++;
-						cout << "Hit! Current score: " << score << endl;
-						dynamicTarget->moveTarget(); // Move the target to a new position
-					}
-					else {
-						std::cout << "No hit detected." << std::endl;
 					}
 				}
+				//if (dynamicTarget2->checkHit(weaponPosition, crosshairPosition)) {
+				//	// Handle hit on target 2
+				//	dynamicTarget2->moveOnHit(currentTime);
+				//	if (timeTrialActive) {
+				//		std::cout << "Hit detected!" << std::endl;
+				//		score++;
+				//		cout << "Hit! Current score: " << score << endl;
+				//	}
+				//}
+				//if (dynamicTarget3->checkHit(weaponPosition, crosshairPosition)) {
+				//	// Handle hit on target 3
+				//	dynamicTarget3->moveOnHit(currentTime);
+				//	if (timeTrialActive) {
+				//		std::cout << "Hit detected!" << std::endl;
+				//		score++;
+				//		cout << "Hit! Current score: " << score << endl;
+				//	}
+				//}
 			}
 
 			if (!(is_pressed && button0)) {
@@ -859,14 +996,12 @@ void createBlocks(cWorld* world) {
 		for (int j = 0; j < 5; j++) {
 			cMesh* block = new cMesh();
 			world->addChild(block);
-
-			cCreateBox(block, 0.5, 0.5, 0.5);
+			cCreateBox(block, 0.5, 0.5, 0.5 + (rand() % 100) / 100.0);
 			block->setLocalPos(i * 1.0 - 2.0, j * 1.0 - 2.0, 0.0);
-
 			cMaterial material;
-			material.setGrayLevel(0.5);
+			material.setBlueDeepSky();
 			block->setMaterial(material);
-
+			block->setUseTransparency(true);
 			blocks.push_back(block);
 		}
 	}
@@ -920,13 +1055,19 @@ void updateWeaponPositionAndOrientation(cGenericHapticDevicePtr hapticDevice, cT
 	// Get camera position and orientation
 	cVector3d camPosition = camera->getLocalPos();
 
+	// Get the camera's direction
+	cVector3d cameraDir = camera->getLookVector();
+	cameraDir.normalize();
+
 	// Define a fixed offset for the weapon in camera space
 	cVector3d weaponOffset = cVector3d(-2.0, 0, 0);  // Adjust these values as needed
 
 	// Calculate weapon position in world space
 	cVector3d weaponPosition = camPosition + weaponOffset;
 
-	tool->setLocalPos(weaponPosition);
+	cVector3d offsetPos = weaponPosition + cameraDir * 0.1;  // Adjust 0.1 as needed
+
+	tool->setLocalPos(offsetPos);
 }
 
 //------------------------------------------------------------------------------
@@ -997,7 +1138,7 @@ void apply_pistol_force(void) {
 		cVector3d weaponPosi = tool->getDeviceGlobalPos();
 		weaponPosi.add(cVector3d(0.0, 0, 0.1));
 		bulletTraj->m_pointA = weaponPosi;
-		bulletTraj->m_pointB = crosshair->getPosition();
+		bulletTraj->m_pointB = crosshair->getPosition() + cVector3d(-10,0,0);
 		bulletTraj->setShowEnabled(true);
 
 		// Visual feedback: upward and slight sideways rotation
@@ -1074,7 +1215,7 @@ void apply_rifle_force(void) {
 		cVector3d weaponPosi = tool->getDeviceGlobalPos();
 		weaponPosi.add(cVector3d(0.0, 0, 0.5));
 		bulletTraj->m_pointA = weaponPosi;
-		bulletTraj->m_pointB = crosshair->getPosition();
+		bulletTraj->m_pointB = crosshair->getPosition() + cVector3d(-10, 0, 0);
 		bulletTraj->setShowEnabled(true);
 
 		// Visual feedback
@@ -1166,7 +1307,7 @@ void apply_sniper_force(void) {
 		cVector3d weaponPosi = tool->getDeviceGlobalPos();
 		weaponPosi.add(cVector3d(0.0, 0, 0.0));
 		bulletTraj->m_pointA = weaponPosi;
-		bulletTraj->m_pointB = crosshair->getPosition();
+		bulletTraj->m_pointB = crosshair->getPosition() + cVector3d(-10, 0, 0);
 		bulletTraj->setShowEnabled(true);
 
 		// Visual feedback: simple upward rotation
