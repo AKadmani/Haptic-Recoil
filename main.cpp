@@ -2,6 +2,7 @@
 #include <mutex>
 #include <chrono>
 #include <vector>
+#include <deque>
 
 using namespace chai3d;
 using namespace std;
@@ -37,7 +38,6 @@ cPositionalLight* pointLight;
 cSpotLight* spotLight;
 
 void setupLights(cWorld* world) {
-	// Directional light (already exists in your code)
 	directionalLight = new cDirectionalLight(world);
 	world->addChild(directionalLight);
 	directionalLight->setEnabled(true);
@@ -62,8 +62,8 @@ void setupLights(cWorld* world) {
 	spotLight = new cSpotLight(world);
 	world->addChild(spotLight);
 	spotLight->setEnabled(true);
-	spotLight->setLocalPos(-2.0, 0.0, 3.0);
-	spotLight->setDir(0.0, 0.0, -1.0);
+	spotLight->setLocalPos(0.0, -8.0, 3.0);
+	spotLight->setDir(1.0, 0.0, -1.0);
 	spotLight->m_ambient.set(0.2f, 0.2f, 0.2f);
 	spotLight->m_diffuse.set(0.8f, 0.8f, 0.8f);
 	spotLight->m_specular.set(1.0f, 1.0f, 1.0f);
@@ -124,8 +124,55 @@ volatile bool graphicsUpdateFlag = false;
 cVector3d currentToolP;
 cVector3d lastToolP;
 
+cShapeLine* forceVector = nullptr;
+std::deque<cVector3d> forceHistory;
+const int FORCE_HISTORY_SIZE = 100;
+const double FORCE_SCALE = 0.1; // Adjust this to scale the force visualization
+
+// Add this function to initialize the force vector
+void initForceVisualization(cWorld* world) {
+	forceVector = new cShapeLine(cVector3d(0, 0, 0), cVector3d(0, 0, 0));
+	forceVector->setLineWidth(2.0);
+	forceVector->m_colorPointA.setRed();
+	forceVector->m_colorPointB.setRed();
+	world->addChild(forceVector);
+}
+
+// Add this function to update the force visualization
+void updateForceVisualization(const cVector3d& force, const cVector3d& position) {
+	cVector3d scaledForce = force * FORCE_SCALE;
+	forceVector->m_pointA = position;
+	forceVector->m_pointB = position + scaledForce;
+
+	forceHistory.push_front(scaledForce);
+	if (forceHistory.size() > FORCE_HISTORY_SIZE) {
+		forceHistory.pop_back();
+	}
+}
+
+// Add this function to draw the force history
+void drawForceHistory(cGenericObject* camera) {
+	if (forceHistory.empty()) return;
+
+	cVector3d startPos = forceVector->m_pointA;
+	glDisable(GL_LIGHTING);
+	glBegin(GL_LINE_STRIP);
+	for (size_t i = 0; i < forceHistory.size(); ++i) {
+		float alpha = 1.0f - static_cast<float>(i) / FORCE_HISTORY_SIZE;
+		glColor4f(1.0f, 0.0f, 0.0f, alpha);
+		cVector3d point = startPos + forceHistory[i];
+		glVertex3d(point.x(), point.y(), point.z());
+	}
+	glEnd();
+	glEnable(GL_LIGHTING);
+}
+
 const double CAMERA_SPEED = 0.1;
 bool moveForward = false, moveBackward = false, moveLeft = false, moveRight = false;
+const double WEAPON_ROTATION_SPEED = 0.002;
+bool rotateLeft = false, rotateRight = false;
+double currentRotationAngle = 0.0;
+const double MAX_ROTATION_ANGLE = cDegToRad(720); // Maximum rotation of 30 degrees in each direction
 
 cShapeLine* bulletTraj;
 
@@ -166,7 +213,7 @@ public:
 		// Bottom block
 		cMesh* bottom = new cMesh();
 		world->addChild(bottom);
-		cCreateBox(bottom, 0.01, 0.01, 0.05);
+		cCreateBox(bottom,0.01, 0.01, 0.05);
 		bottom->setLocalPos(0.0, 0.0, -0.04);
 		bottom->setMaterial(material);
 		crosshairParts.push_back(bottom);
@@ -250,20 +297,20 @@ public:
 		}
 
 		// Scale and set material properties
-		targetMesh->scale(0.05);  // Adjust scale as needed
+		targetMesh->scale(0.07);  // Adjust scale as needed
 		cMatrix3d rotMat;
 		rotMat.identity();
 		rotMat.rotateAboutGlobalAxisDeg(1, 0, 0, 90);
 		rotMat.rotateAboutGlobalAxisDeg(0, 0, 1, 90);
 		targetMesh->setLocalRot(rotMat);
 		cMaterial material;
-		material.setPurpleDarkMagenta();
+		material.setBlack();
 		targetMesh->setMaterial(material);
 
 		// Create a bounding box for the entire mesh
 		targetMesh->computeBoundaryBox(true);
 
-		targetMesh->setShowBoundaryBox(true);
+		targetMesh->setShowBoundaryBox(false);
 	}
 
 	void update(double currentTime) {
@@ -276,7 +323,7 @@ public:
 	void moveTarget() {
 		// Generate random position within the specified bounds
 		double x = -4; // Fixed X position
-		double y = initialY + ((rand() % 1001 - 500) / 100.0);  // Range: initialY - 5 to initialY + 5
+		double y = initialY + ((rand() % 601 - 300) / 100.0);  // Range: initialY - 5 to initialY + 5
 		double z = -0.5 + (rand() % 100) / 100.0; // Range: -0.5 to 0.5
 		targetMesh->setLocalPos(x, y, z);
 	}
@@ -414,13 +461,17 @@ int main(int argc, char* argv[])
 	cout << "-----------------------------------" << endl << endl << endl;
 	cout << "Keyboard Options:" << endl << endl;
 	cout << "[x] - Exit application" << endl;
+	cout << "[w] - forward" << endl;
+	cout << "[a] - left" << endl;
+	cout << "[s] - right" << endl;
+	cout << "[d] - back" << endl;
+	cout << "[t] - time trial" << endl;
 	cout << endl << endl;
 
 	// OPENGL - WINDOW DISPLAY
 	glutInit(&argc, argv);
 	screenW = glutGet(GLUT_SCREEN_WIDTH);
 	screenH = glutGet(GLUT_SCREEN_HEIGHT);
-	cout << screenW << endl;
 	windowW = (int)(0.8 * screenH);
 	windowH = (int)(0.5 * screenH);
 	windowPosY = (screenH - windowH) / 2;
@@ -447,15 +498,17 @@ int main(int argc, char* argv[])
 
 	// WORLD - CAMERA - LIGHTING
 	world = new cWorld();
-	world->m_backgroundColor.setWhite();
+	world->m_backgroundColor.setWhiteAliceBlue();
 	camera = new cCamera(world);
 	world->addChild(camera);
 	camera->set(cVector3d(5.0, 0.0, 0.0),    // camera position (eye)
 		cVector3d(0.0, 0.0, 0.0),    // look at position (target)
 		cVector3d(0.0, 0.0, 1.0));   // direction of the (up) vector
 	camera->setClippingPlanes(0.01, 100);
+	camera->setUseMultipassTransparency(true);
 
 	setupLights(world);
+	// initForceVisualization(world);
 
 	// HAPTIC DEVICES / TOOLS
 	handler = new cHapticDeviceHandler();
@@ -482,9 +535,9 @@ int main(int argc, char* argv[])
 	cFont *font = NEW_CFONTCALIBRI32();
 
 	scoreTimeLabel = new cLabel(font);
-	scoreTimeLabel->m_fontColor.setBlueRoyal();
+	scoreTimeLabel->m_fontColor.setGreenDarkOlive();
 	camera->m_frontLayer->addChild(scoreTimeLabel);
-	scoreTimeLabel->setLocalPos(10, windowH + 250);
+	scoreTimeLabel->setLocalPos(10, windowH + 350);
 
 	// Declare the background pointer
 	cBackground* background = new cBackground();
@@ -505,7 +558,7 @@ int main(int argc, char* argv[])
 	}
 	else {
 		// If the background loaded successfully, add it to the camera
-		camera->m_backLayer->addChild(background);
+		// camera->m_backLayer->addChild(background);
 	}
 
 	createBlocks(world);
@@ -600,14 +653,16 @@ int main(int argc, char* argv[])
 	hapticDevice->getPosition(devicePosition);
 	weapon_pistol->setLocalPos(devicePosition);
 
-	// set materials for the weapons
-	cMaterial mat;
-	mat.m_specular.set(0.9f, 0.9f, 0.9f, 1.0f);  // Using cColorf to set specular color
-	mat.setShininess(100);  // This method exists and sets the shininess
+	cMaterial weaponMaterial;
+	weaponMaterial.m_ambient.set(0.3f, 0.3f, 0.3f);
+	weaponMaterial.m_diffuse.set(0.7f, 0.7f, 0.7f);
+	weaponMaterial.m_specular.set(0.9f, 0.9f, 0.9f);
+	weaponMaterial.setShininess(100.0);
 
-	weapon_pistol->setMaterial(mat);
-	weapon_dragunov->setMaterial(mat);
-	weapon_rifle->setMaterial(mat);
+	weapon_pistol->setMaterial(weaponMaterial);
+	weapon_dragunov->setMaterial(weaponMaterial);
+	weapon_rifle->setMaterial(weaponMaterial);
+
 	bulletTraj = new cShapeLine(tool->getLocalPos(), crosshair->getPosition());
 	bulletTraj->setLineWidth(2.0);
 	bulletTraj->m_colorPointA.set(0.5, 0.0, 0.0);
@@ -658,6 +713,12 @@ void keySelect(unsigned char key, int x, int y) {
 	case 'd':
 		moveRight = true;
 		break;
+	case 'q':
+		rotateLeft = true;
+		break;
+	case 'e':
+		rotateRight = true;
+		break;
 	case 't':
 		if (!timeTrialActive) {
 			timeTrialActive = true;
@@ -682,6 +743,12 @@ void keyRelease(unsigned char key, int x, int y) {
 		break;
 	case 'd':
 		moveRight = false;
+		break;
+	case 'q':
+		rotateLeft = false;
+		break;
+	case 'e':
+		rotateRight = false;
 		break;
 	}
 }
@@ -736,6 +803,8 @@ void updateGraphics(void)
 	// render world
 	camera->renderView(windowW, windowH);
 
+	drawForceHistory(camera);
+
 	// swap buffers
 	glutSwapBuffers();
 
@@ -748,6 +817,7 @@ void updateGraphics(void)
 	if (err != GL_NO_ERROR) cout << "Error:  %s\n" << gluErrorString(err);
 }
 
+// Update the updateCameraPosition function
 void updateCameraPosition() {
 	cVector3d pos = camera->getLocalPos();
 	cVector3d dir = camera->getLookVector();
@@ -996,7 +1066,7 @@ void createBlocks(cWorld* world) {
 		for (int j = 0; j < 5; j++) {
 			cMesh* block = new cMesh();
 			world->addChild(block);
-			cCreateBox(block, 0.5, 0.5, 0.5 + (rand() % 100) / 100.0);
+			cCreateBox(block, 0.0, 0.0, 0.0);//  +(rand() % 100) / 100.0);
 			block->setLocalPos(i * 1.0 - 2.0, j * 1.0 - 2.0, 0.0);
 			cMaterial material;
 			material.setBlueDeepSky();
@@ -1030,21 +1100,21 @@ void setInitialWeaponOrientations(void) {
 	pistolOrientation.identity();
 	pistolOrientation.rotateAboutGlobalAxisDeg(1, 0, 0, 90); // - up + down
 	pistolOrientation.rotateAboutGlobalAxisDeg(0, 1, 0, 0);
-	pistolOrientation.rotateAboutGlobalAxisDeg(0, 0, 1, -90);
+	pistolOrientation.rotateAboutGlobalAxisDeg(0, 0, 1, -90); // was -90
 	weapon_pistol->setLocalRot(pistolOrientation);
 
 	// Dragunov orientation
 	dragunovOrientation.identity();
 	dragunovOrientation.rotateAboutGlobalAxisDeg(1, 0, 0, 90); // lean right left (- right + left)
 	dragunovOrientation.rotateAboutGlobalAxisDeg(0, 1, 0, 0); // + up - down 
-	dragunovOrientation.rotateAboutGlobalAxisDeg(0, 0, 1, 0);
+	dragunovOrientation.rotateAboutGlobalAxisDeg(0, 0, 1, 0); // was 0 
 	weapon_dragunov->setLocalRot(dragunovOrientation);
 
 	// Rifle orientation
 	rifleOrientation.identity();
-	rifleOrientation.rotateAboutGlobalAxisDeg(1, 0, 0, 180);
+	rifleOrientation.rotateAboutGlobalAxisDeg(1, 0, 0, 180); 
 	rifleOrientation.rotateAboutGlobalAxisDeg(0, 1, 0, 180); // + up - down
-	rifleOrientation.rotateAboutGlobalAxisDeg(0, 0, 1, 0);
+	rifleOrientation.rotateAboutGlobalAxisDeg(0, 0, 1, 0); // was 0
 	weapon_rifle->setLocalRot(rifleOrientation);
 }
 
@@ -1052,6 +1122,7 @@ void setInitialWeaponOrientations(void) {
 
 void updateWeaponPositionAndOrientation(cGenericHapticDevicePtr hapticDevice, cToolCursor* tool) {
 	setInitialWeaponOrientations();
+
 	// Get camera position and orientation
 	cVector3d camPosition = camera->getLocalPos();
 
@@ -1068,6 +1139,45 @@ void updateWeaponPositionAndOrientation(cGenericHapticDevicePtr hapticDevice, cT
 	cVector3d offsetPos = weaponPosition + cameraDir * 0.1;  // Adjust 0.1 as needed
 
 	tool->setLocalPos(offsetPos);
+
+	// Apply weapon rotation
+	if (rotateLeft && currentRotationAngle > -MAX_ROTATION_ANGLE) {
+		currentRotationAngle -= WEAPON_ROTATION_SPEED;
+		currentRotationAngle = cMax(currentRotationAngle, -MAX_ROTATION_ANGLE);
+	}
+	if (rotateRight && currentRotationAngle < MAX_ROTATION_ANGLE) {
+		currentRotationAngle += WEAPON_ROTATION_SPEED;
+		currentRotationAngle = cMin(currentRotationAngle, MAX_ROTATION_ANGLE);
+	}
+
+	// Create rotation matrix based on the current rotation angle
+	cMatrix3d rotZ;
+	rotZ.identity();
+	rotZ.rotateAboutLocalAxisRad(cVector3d(0, 1, 0), currentRotationAngle);
+	cMatrix3d rotZR;
+	rotZR.identity();
+	rotZR.rotateAboutLocalAxisRad(cVector3d(0, 0, 1), currentRotationAngle);
+
+	// Apply the rotation to the current weapon
+	cMatrix3d currentWeaponRot;
+	if (isPistolLoaded) {
+		currentWeaponRot = pistolOrientation * rotZ;
+		weapon_pistol->setLocalRot(currentWeaponRot);
+	}
+	else if (isDragunovLoaded) {
+		currentWeaponRot = dragunovOrientation * rotZ;
+		weapon_dragunov->setLocalRot(currentWeaponRot);
+	}
+	else if (isRifleLoaded) {
+		currentWeaponRot = rifleOrientation * rotZR;
+		weapon_rifle->setLocalRot(currentWeaponRot);
+	}
+
+	// Update crosshair position based on weapon rotation
+	cVector3d crosshairOffset = cVector3d(-2.0, 0, 0); // Adjust as needed
+	crosshairOffset = rotZ * crosshairOffset;
+	cVector3d newCrosshairPos = offsetPos + crosshairOffset;
+	crosshair->setPosition(newCrosshairPos);
 }
 
 //------------------------------------------------------------------------------
@@ -1134,6 +1244,7 @@ void apply_pistol_force(void) {
 
 		// Apply the calculated force and torque
 		hapticDevice->setForceAndTorque(current_force, current_torque);
+		// updateForceVisualization(current_force, tool->getDeviceGlobalPos());
 
 		cVector3d weaponPosi = tool->getDeviceGlobalPos();
 		weaponPosi.add(cVector3d(0.0, 0, 0.1));
@@ -1211,6 +1322,7 @@ void apply_rifle_force(void) {
 	if (elapsed_time < 60) {
 		// apply the calculated force and torque
 		hapticDevice->setForceAndTorque(current_force, current_torque * deviation_angle);
+		// updateForceVisualization(current_force, tool->getDeviceGlobalPos());
 
 		cVector3d weaponPosi = tool->getDeviceGlobalPos();
 		weaponPosi.add(cVector3d(0.0, 0, 0.5));
@@ -1237,6 +1349,7 @@ void apply_rifle_force(void) {
 	}
 	else if (elapsed_time < 120) {
 		hapticDevice->setForce(zero_vector);
+		//updateForceVisualization(current_force, tool->getDeviceGlobalPos());
 
 		// Visual recovery
 		float recovery_progress = (float)(elapsed_time - 60) / 60.0;
@@ -1303,6 +1416,7 @@ void apply_sniper_force(void) {
 
 		// Apply the calculated force and torque
 		hapticDevice->setForceAndTorque(current_force, current_torque);
+		//updateForceVisualization(current_force, tool->getDeviceGlobalPos());
 
 		cVector3d weaponPosi = tool->getDeviceGlobalPos();
 		weaponPosi.add(cVector3d(0.0, 0, 0.0));
