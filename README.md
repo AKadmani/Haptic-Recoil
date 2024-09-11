@@ -63,6 +63,8 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - CHAI3D framework developers
 - Novint Technologies for the Falcon haptic device
 - Technical University of Munich
+- [Recoil energy calculator](shooterscalculator.com)
+- [Haptically enabled simulation system for firearm shooting training](https://www.researchgate.net/publication/325792582_Haptically_enabled_simulation_system_for_firearm_shooting_training)
 
 ## Disclaimer
 
