@@ -1,42 +1,54 @@
 # OASIS - Shooting Simulator
 
-OASIS (Optimal Accuracy Simulator In Simulations) is an immersive shooting simulator built using the CHAI3D framework. This project aims to provide a realistic and interactive shooting experience with haptic feedback.
+OASIS (Optimal Accuracy Simulator In Simulations) is an immersive shooting simulator built using the CHAI3D framework and designed specifically for the Novint Falcon haptic device. This project aims to provide a realistic and interactive shooting experience with 3 degrees of freedom (3DOF) haptic feedback.
 
 ## Features
 
 - Multiple weapon types: M1911 Pistol, AK47 Rifle, and Dragunov Sniper Rifle
-- Realistic weapon handling and recoil simulation
-- Haptic feedback for enhanced immersion
+- Realistic weapon handling and recoil simulation using the Novint Falcon's 3DOF haptic feedback
 - Dynamic target system
 - Time trial mode for skill assessment
 - 3D environment with obstacle blocks
 - Customizable lighting effects
+- Designed for the Novint Falcon haptic device
 
 ## Requirements
 
 - CHAI3D library
 - OpenGL and GLUT
 - C++ compiler with C++11 support
+- Novint Falcon haptic device
 
 ## Building and Running
 
 1. Ensure you have the CHAI3D library installed and properly configured in your development environment.
-2. Clone this repository:
+2. Make sure your Novint Falcon device is properly connected and drivers are installed.
+3. Clone this repository:
    ```
    git clone https://github.com/AKadmani/Haptic-Recoil.git
    ```
-3. Navigate to the project directory and build the project using your preferred C++ build system (e.g., CMake, Make).
-4. Run the compiled executable.
+4. Navigate to the project directory and build the project using your preferred C++ build system (e.g., CMake, Make).
+5. Run the compiled executable.
 
 ## Controls
 
-- `W`, `A`, `S`, `D`: Move the camera
-- `Q`, `E`: Rotate the weapon
-- Mouse movement: Aim
-- Left mouse button: Fire weapon
-- `1`, `2`, `3`: Switch between weapons (Pistol, Rifle, Sniper)
-- `T`: Start time trial mode
-- `X`: Exit the application
+- Novint Falcon movement: Aim and control weapon position
+- Falcon primary button: Fire weapon
+- Falcon secondary buttons: Switch between weapons
+- Keyboard controls:
+  - `W`, `A`, `S`, `D`: Move the camera
+  - `Q`, `E`: Rotate the weapon
+  - `T`: Start time trial mode
+  - `X`: Exit the application
+
+## Novint Falcon Integration
+
+The OASIS Shooting Simulator is specifically designed to work with the Novint Falcon haptic device. It utilizes the device's 3 degrees of freedom to provide realistic weapon handling and haptic feedback:
+
+- The 3D position of the Falcon's end effector controls the aim and position of the weapon in the virtual environment.
+- The primary button on the Falcon grip is used to fire the currently selected weapon.
+- The additional buttons on the Falcon grip are used to switch between different weapon types.
+- Haptic feedback is provided through the Falcon to simulate recoil and other weapon characteristics.
 
 ## Contributing
 
@@ -49,7 +61,8 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ## Acknowledgements
 
 - CHAI3D framework developers
-- 
+- Novint Technologies for the Falcon haptic device
+- Technical University of Munich
 
 ## Disclaimer
 
