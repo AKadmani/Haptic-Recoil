@@ -1,6 +1,6 @@
 # OASIS - Shooting Simulator
 
-OASIS (Optimal Accuracy Simulator In Simulations) is an immersive shooting simulator built using the CHAI3D framework and designed specifically for the Novint Falcon haptic device. This project aims to provide a realistic and interactive shooting experience with 3 degrees of freedom (3DOF) haptic feedback.
+OASIS is an immersive shooting simulator built using the CHAI3D framework and designed specifically for the Novint Falcon haptic device. This project aims to provide a realistic and interactive shooting experience with 3 degrees of freedom (3DOF) haptic feedback.
 
 ## Features
 
