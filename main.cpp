@@ -283,10 +283,10 @@ public:
 		world->addChild(targetMesh);
 
 		bool fileload;
-		fileload = targetMesh->loadFromFile(RESOURCE_PATH("../resources/FinalBaseMesh.obj"));
+		fileload = targetMesh->loadFromFile(RESOURCE_PATH("../resources/FinalBaseMesh.obj")); // change accordingly
 		if (!fileload) {
 #if defined(_MSVC)
-			fileload = targetMesh->loadFromFile("../../../bin/resources/FinalBaseMesh.obj");
+			fileload = targetMesh->loadFromFile("../../../bin/resources/FinalBaseMesh.obj"); // change accordingly
 #endif
 		}
 		if (!fileload){
@@ -543,10 +543,10 @@ int main(int argc, char* argv[])
 	cBackground* background = new cBackground();
 
 	// Attempt to load the background image
-	bool fload = background->loadFromFile(RESOURCE_PATH("../resources/b1.jpg"));
+	bool fload = background->loadFromFile(RESOURCE_PATH("../resources/b1.jpg")); // change accordingly
 	if (!fload) {
 #if defined(_MSVC)
-		fload = background->loadFromFile("../../../bin/resources/b1.jpg");
+		fload = background->loadFromFile("../../../bin/resources/b1.jpg"); // change accordingly
 #endif
 	}
 
@@ -581,10 +581,10 @@ int main(int argc, char* argv[])
 	weapon_rifle = new cMultiMesh();
 
 	bool fileload;
-	fileload = weapon_pistol->loadFromFile(RESOURCE_PATH("../resources/1911.obj"));
+	fileload = weapon_pistol->loadFromFile(RESOURCE_PATH("../resources/1911.obj")); // change accordingly
 	if (!fileload) {
 #if defined(_MSVC)
-		fileload = weapon_pistol->loadFromFile("../../../bin/resources/1911.obj");
+		fileload = weapon_pistol->loadFromFile("../../../bin/resources/1911.obj"); // change accordingly
 #endif
 	}
 	if (!fileload) {
@@ -595,10 +595,10 @@ int main(int argc, char* argv[])
 		return (-1);
 	}
 
-	fileload = weapon_dragunov->loadFromFile(RESOURCE_PATH("../resources/dragunov.obj"));
+	fileload = weapon_dragunov->loadFromFile(RESOURCE_PATH("../resources/dragunov.obj")); // change accordingly
 	if (!fileload) {
 #if defined(_MSVC)
-		fileload = weapon_dragunov->loadFromFile("../../../bin/resources/dragunov.obj");
+		fileload = weapon_dragunov->loadFromFile("../../../bin/resources/dragunov.obj"); // change accordingly
 #endif
 	}
 	if (!fileload) {
@@ -609,10 +609,10 @@ int main(int argc, char* argv[])
 		return (-1);
 	}
 
-	fileload = weapon_rifle->loadFromFile(RESOURCE_PATH("../resources/ak47.obj"));
+	fileload = weapon_rifle->loadFromFile(RESOURCE_PATH("../resources/ak47.obj")); // change accordingly
 	if (!fileload) {
 #if defined(_MSVC)
-		fileload = weapon_rifle->loadFromFile("../../../bin/resources/ak47.obj");
+		fileload = weapon_rifle->loadFromFile("../../../bin/resources/ak47.obj"); // change accordingly
 #endif
 	}
 	if (!fileload) {
@@ -1039,10 +1039,10 @@ __int64 currentTimeMillis() {
 
 void applyTextureToWeapon(cMultiMesh* weapon, const std::string& texturePath) {
 	cTexture2dPtr weaponTexture = cTexture2d::create();
-	bool fileload = weaponTexture->loadFromFile(RESOURCE_PATH(texturePath.c_str()));
+	bool fileload = weaponTexture->loadFromFile(RESOURCE_PATH(texturePath.c_str())); // change accordingly
 	if (!fileload) {
 #if defined(_MSVC)
-		fileload = weaponTexture->loadFromFile((std::string("../../../bin/resources/") + texturePath).c_str());
+		fileload = weaponTexture->loadFromFile((std::string("../../../bin/resources/") + texturePath).c_str()); // change accordingly
 #endif
 	}
 	if (!fileload) {
